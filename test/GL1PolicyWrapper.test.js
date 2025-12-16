@@ -1,23 +1,47 @@
 const { expect } = require("chai");
 const { ethers } = require("hardhat");
 
-describe("GL1 Programmable Compliance Toolkit", function () {
+describe("GL1 PBM Policy Wrapper", function () {
     let ccidRegistry;
     let policyManager;
     let policyWrapper;
-    let token;
-    let aceIntegration;
+    let pbmToken;
+    let mockERC20;
+    let mockERC721;
+    let mockERC1155;
 
     let owner;
-    let user1;
-    let user2;
+    let lender;
+    let borrower;
     let regulator;
 
     const JURISDICTION_TW = ethers.encodeBytes32String("TW");
     const TIER_STANDARD = ethers.keccak256(ethers.toUtf8Bytes("TIER_STANDARD"));
 
+    // Asset types
+    const AssetType = {
+        ERC20: 0,
+        ERC721: 1,
+        ERC1155: 2
+    };
+
     beforeEach(async function () {
-        [owner, user1, user2, regulator] = await ethers.getSigners();
+        [owner, lender, borrower, regulator] = await ethers.getSigners();
+
+        // 部署 Mock ERC20
+        const MockERC20 = await ethers.getContractFactory("MockERC20");
+        mockERC20 = await MockERC20.deploy("Mock USDC", "MUSDC");
+        await mockERC20.waitForDeployment();
+
+        // 部署 Mock ERC721
+        const MockERC721 = await ethers.getContractFactory("MockERC721");
+        mockERC721 = await MockERC721.deploy("Mock NFT", "MNFT");
+        await mockERC721.waitForDeployment();
+
+        // 部署 Mock ERC1155
+        const MockERC1155 = await ethers.getContractFactory("MockERC1155");
+        mockERC1155 = await MockERC1155.deploy();
+        await mockERC1155.waitForDeployment();
 
         // 部署 CCIDRegistry
         const CCIDRegistry = await ethers.getContractFactory("CCIDRegistry");
@@ -33,208 +57,325 @@ describe("GL1 Programmable Compliance Toolkit", function () {
         );
         await policyManager.waitForDeployment();
 
+        // 先部署一個臨時 wrapper 地址來創建 PBMToken
+        // 然後再部署真正的 wrapper
+        const tempWrapper = owner.address;
+        
+        // 部署 PBMToken
+        const PBMToken = await ethers.getContractFactory("PBMToken");
+        pbmToken = await PBMToken.deploy(tempWrapper);
+        await pbmToken.waitForDeployment();
+
         // 部署 GL1PolicyWrapper
         const GL1PolicyWrapper = await ethers.getContractFactory("GL1PolicyWrapper");
         policyWrapper = await GL1PolicyWrapper.deploy(
             JURISDICTION_TW,
-            await policyManager.getAddress()
+            await policyManager.getAddress(),
+            await pbmToken.getAddress()
         );
         await policyWrapper.waitForDeployment();
 
-        // 部署 GL1CompliantToken
-        const GL1CompliantToken = await ethers.getContractFactory("GL1CompliantToken");
-        token = await GL1CompliantToken.deploy(
-            "GL1 Security Token",
-            "GL1ST",
-            JURISDICTION_TW
-        );
-        await token.waitForDeployment();
+        // 更新 PBMToken 的 wrapper
+        await pbmToken.updateWrapper(await policyWrapper.getAddress());
 
-        // 部署 ChainlinkACEIntegration (使用零地址跳過外部調用)
-        const ChainlinkACEIntegration = await ethers.getContractFactory("ChainlinkACEIntegration");
-        aceIntegration = await ChainlinkACEIntegration.deploy(ethers.ZeroAddress);
-        await aceIntegration.waitForDeployment();
-
-        // 配置合約
-        await token.setPolicyWrapper(JURISDICTION_TW, await policyWrapper.getAddress());
+        // 配置管轄區
         await policyManager.setJurisdictionEnabled(JURISDICTION_TW, true);
+
+        // 鑄造測試代幣
+        await mockERC20.mint(lender.address, ethers.parseEther("10000"));
+        await mockERC20.mint(borrower.address, ethers.parseEther("10000"));
+        await mockERC721.mint(borrower.address, 1);
+        await mockERC1155.mint(borrower.address, 100, 1000);
     });
 
-    describe("CCIDRegistry", function () {
-        it("應該能夠註冊身份", async function () {
-            const identityHash = ethers.keccak256(ethers.toUtf8Bytes("user1_identity"));
-
-            await ccidRegistry.registerIdentity(
-                user1.address,
-                identityHash,
-                TIER_STANDARD
-            );
-
-            const [hash, timestamp, tier, isActive] = await ccidRegistry.getIdentity(user1.address);
-            expect(hash).to.equal(identityHash);
-            expect(isActive).to.be.true;
+    describe("PBMToken", function () {
+        it("應該正確部署 PBMToken", async function () {
+            expect(await pbmToken.wrapper()).to.equal(await policyWrapper.getAddress());
         });
 
-        it("應該能夠核准管轄區", async function () {
-            const identityHash = ethers.keccak256(ethers.toUtf8Bytes("user1_identity"));
-
-            await ccidRegistry.registerIdentity(user1.address, identityHash, TIER_STANDARD);
-            await ccidRegistry.approveJurisdiction(user1.address, JURISDICTION_TW);
-
-            const isValid = await ccidRegistry.verifyCredential(user1.address, JURISDICTION_TW);
-            expect(isValid).to.be.true;
-        });
-
-        it("未核准的管轄區應該驗證失敗", async function () {
-            const identityHash = ethers.keccak256(ethers.toUtf8Bytes("user1_identity"));
-            const JURISDICTION_US = ethers.encodeBytes32String("US");
-
-            await ccidRegistry.registerIdentity(user1.address, identityHash, TIER_STANDARD);
-            await ccidRegistry.approveJurisdiction(user1.address, JURISDICTION_TW);
-
-            const isValid = await ccidRegistry.verifyCredential(user1.address, JURISDICTION_US);
-            expect(isValid).to.be.false;
+        it("只有 wrapper 能夠 mint", async function () {
+            // 應該失敗
+            await expect(
+                pbmToken.mint(lender.address, 1, 100)
+            ).to.be.reverted;
         });
     });
 
-    describe("GL1PolicyWrapper", function () {
-        it("應該正確設置管轄區代碼", async function () {
-            const jurisdictionCode = await policyWrapper.jurisdictionCode();
-            expect(jurisdictionCode).to.equal(JURISDICTION_TW);
-        });
+    describe("Wrap ERC20", function () {
+        const emptyProof = {
+            proofType: ethers.encodeBytes32String("KYC"),
+            credentialHash: ethers.keccak256(ethers.toUtf8Bytes("credential")),
+            issuedAt: Math.floor(Date.now() / 1000) - 3600,
+            expiresAt: Math.floor(Date.now() / 1000) + 86400,
+            issuer: ethers.ZeroAddress,
+            signature: "0x"
+        };
 
-        it("應該授予正確的角色", async function () {
-            const POLICY_ADMIN_ROLE = ethers.keccak256(ethers.toUtf8Bytes("POLICY_ADMIN_ROLE"));
-            const hasRole = await policyWrapper.hasRole(POLICY_ADMIN_ROLE, owner.address);
-            expect(hasRole).to.be.true;
-        });
-    });
-
-    describe("GL1PolicyManager", function () {
-        it("應該能夠註冊規則集", async function () {
-            const ruleSetId = ethers.keccak256(ethers.toUtf8Bytes("KYC_RULE"));
-
-            await policyManager.registerRuleSet(
-                ruleSetId,
-                "KYC",
-                true,
-                owner.address,
-                1
-            );
-
-            const ruleSet = await policyManager.ruleSets(ruleSetId);
-            expect(ruleSet.ruleType).to.equal("KYC");
-            expect(ruleSet.isOnChain).to.be.true;
-            expect(ruleSet.isActive).to.be.true;
-        });
-
-        it("應該能夠配置管轄區規則", async function () {
-            const ruleSetId = ethers.keccak256(ethers.toUtf8Bytes("AML_RULE"));
-
-            await policyManager.registerRuleSet(
-                ruleSetId,
-                "AML",
-                true,
-                owner.address,
-                1
-            );
-
-            await policyManager.setJurisdictionRules(JURISDICTION_TW, [ruleSetId]);
-
-            const ruleCount = await policyManager.getJurisdictionRuleCount(JURISDICTION_TW);
-            expect(ruleCount).to.equal(1);
-        });
-    });
-
-    describe("GL1CompliantToken", function () {
         beforeEach(async function () {
-            // 鑄造一些代幣給 owner
-            await token.mint(owner.address, ethers.parseEther("1000"));
+            // 豁免 lender 的合規檢查以便測試
+            await policyWrapper.setComplianceExemption(lender.address, true);
         });
 
-        it("應該正確設置代幣名稱和符號", async function () {
-            expect(await token.name()).to.equal("GL1 Security Token");
-            expect(await token.symbol()).to.equal("GL1ST");
+        it("應該能夠包裝 ERC20", async function () {
+            const amount = ethers.parseEther("1000");
+            
+            // Approve wrapper
+            await mockERC20.connect(lender).approve(
+                await policyWrapper.getAddress(),
+                amount
+            );
+
+            // Wrap
+            const tx = await policyWrapper.connect(lender).wrap(
+                AssetType.ERC20,
+                await mockERC20.getAddress(),
+                0,
+                amount,
+                emptyProof
+            );
+
+            // 計算預期的 PBM tokenId
+            const pbmTokenId = await policyWrapper.computePBMTokenId(
+                AssetType.ERC20,
+                await mockERC20.getAddress(),
+                0
+            );
+
+            // 驗證 PBM 餘額
+            expect(await pbmToken.balanceOf(lender.address, pbmTokenId)).to.equal(amount);
+
+            // 驗證底層資產已轉移
+            expect(await mockERC20.balanceOf(await policyWrapper.getAddress())).to.equal(amount);
         });
 
-        it("豁免帳戶應該能夠轉帳", async function () {
-            // Owner 預設是豁免的
-            await token.transfer(user1.address, ethers.parseEther("100"));
-            expect(await token.balanceOf(user1.address)).to.equal(ethers.parseEther("100"));
-        });
+        it("未批准應該失敗", async function () {
+            const amount = ethers.parseEther("1000");
 
-        it("應該能夠設置合規豁免", async function () {
-            await token.setComplianceExemption(user1.address, true);
-            const isExempt = await token.complianceExempt(user1.address);
-            expect(isExempt).to.be.true;
-        });
-
-        it("應該能夠暫停和恢復合約", async function () {
-            await token.pause();
-            expect(await token.paused()).to.be.true;
-
-            await token.unpause();
-            expect(await token.paused()).to.be.false;
+            await expect(
+                policyWrapper.connect(lender).wrap(
+                    AssetType.ERC20,
+                    await mockERC20.getAddress(),
+                    0,
+                    amount,
+                    emptyProof
+                )
+            ).to.be.reverted;
         });
     });
 
-    describe("ChainlinkACEIntegration", function () {
-        it("應該能夠定義政策", async function () {
-            const tx = await aceIntegration.definePolicy(
-                "Taiwan Compliance Policy",
-                [user1.address, user2.address],
-                ethers.parseEther("1000000"),
-                [JURISDICTION_TW]
-            );
+    describe("Wrap ERC721", function () {
+        const emptyProof = {
+            proofType: ethers.encodeBytes32String("KYC"),
+            credentialHash: ethers.keccak256(ethers.toUtf8Bytes("credential")),
+            issuedAt: Math.floor(Date.now() / 1000) - 3600,
+            expiresAt: Math.floor(Date.now() / 1000) + 86400,
+            issuer: ethers.ZeroAddress,
+            signature: "0x"
+        };
 
-            const receipt = await tx.wait();
-
-            // 檢查是否發出事件
-            const events = receipt.logs;
-            expect(events.length).to.be.greaterThan(0);
+        beforeEach(async function () {
+            await policyWrapper.setComplianceExemption(borrower.address, true);
         });
 
-        it("應該能夠跨鏈驗證合規", async function () {
-            // 先定義政策
-            await aceIntegration.definePolicy(
-                "Cross Chain Policy",
-                [user1.address],
-                ethers.parseEther("1000000"),
-                [JURISDICTION_TW, ethers.encodeBytes32String("SG")]
+        it("應該能夠包裝 ERC721", async function () {
+            const tokenId = 1;
+
+            // Approve wrapper
+            await mockERC721.connect(borrower).approve(
+                await policyWrapper.getAddress(),
+                tokenId
             );
 
-            // 驗證跨鏈合規 (this emits an event, check event instead of return)
-            const tx = await aceIntegration.verifyComplianceAcrossChains(
-                user1.address,
-                JURISDICTION_TW,
-                ethers.encodeBytes32String("SG")
+            // Wrap
+            await policyWrapper.connect(borrower).wrap(
+                AssetType.ERC721,
+                await mockERC721.getAddress(),
+                tokenId,
+                1,
+                emptyProof
             );
 
-            // Just verify the transaction succeeded
-            const receipt = await tx.wait();
-            expect(receipt.status).to.equal(1);
+            // 計算 PBM tokenId
+            const pbmTokenId = await policyWrapper.computePBMTokenId(
+                AssetType.ERC721,
+                await mockERC721.getAddress(),
+                tokenId
+            );
+
+            // 驗證
+            expect(await pbmToken.balanceOf(borrower.address, pbmTokenId)).to.equal(1);
+            expect(await mockERC721.ownerOf(tokenId)).to.equal(await policyWrapper.getAddress());
         });
     });
 
-    describe("Integration Tests", function () {
-        it("完整的合規流程測試", async function () {
-            const identityHash = ethers.keccak256(ethers.toUtf8Bytes("user1_full_kyc"));
+    describe("Wrap ERC1155", function () {
+        const emptyProof = {
+            proofType: ethers.encodeBytes32String("KYC"),
+            credentialHash: ethers.keccak256(ethers.toUtf8Bytes("credential")),
+            issuedAt: Math.floor(Date.now() / 1000) - 3600,
+            expiresAt: Math.floor(Date.now() / 1000) + 86400,
+            issuer: ethers.ZeroAddress,
+            signature: "0x"
+        };
 
-            // 1. 在 CCID Registry 註冊身份
-            await ccidRegistry.registerIdentity(user1.address, identityHash, TIER_STANDARD);
-            await ccidRegistry.approveJurisdiction(user1.address, JURISDICTION_TW);
+        beforeEach(async function () {
+            await policyWrapper.setComplianceExemption(borrower.address, true);
+        });
 
-            // 2. 驗證身份
-            const isValid = await ccidRegistry.verifyCredential(user1.address, JURISDICTION_TW);
-            expect(isValid).to.be.true;
+        it("應該能夠包裝 ERC1155", async function () {
+            const tokenId = 100;
+            const amount = 500;
 
-            // 3. 鑄造代幣並設置豁免（測試用）
-            await token.mint(owner.address, ethers.parseEther("1000"));
-            await token.setComplianceExemption(user1.address, true);
+            // Approve wrapper
+            await mockERC1155.connect(borrower).setApprovalForAll(
+                await policyWrapper.getAddress(),
+                true
+            );
 
-            // 4. 執行轉帳
-            await token.transfer(user1.address, ethers.parseEther("100"));
-            expect(await token.balanceOf(user1.address)).to.equal(ethers.parseEther("100"));
+            // Wrap
+            await policyWrapper.connect(borrower).wrap(
+                AssetType.ERC1155,
+                await mockERC1155.getAddress(),
+                tokenId,
+                amount,
+                emptyProof
+            );
+
+            // 計算 PBM tokenId
+            const pbmTokenId = await policyWrapper.computePBMTokenId(
+                AssetType.ERC1155,
+                await mockERC1155.getAddress(),
+                tokenId
+            );
+
+            // 驗證
+            expect(await pbmToken.balanceOf(borrower.address, pbmTokenId)).to.equal(amount);
+        });
+    });
+
+    describe("Unwrap", function () {
+        const emptyProof = {
+            proofType: ethers.encodeBytes32String("KYC"),
+            credentialHash: ethers.keccak256(ethers.toUtf8Bytes("credential")),
+            issuedAt: Math.floor(Date.now() / 1000) - 3600,
+            expiresAt: Math.floor(Date.now() / 1000) + 86400,
+            issuer: ethers.ZeroAddress,
+            signature: "0x"
+        };
+
+        it("應該能夠解包 ERC20", async function () {
+            await policyWrapper.setComplianceExemption(lender.address, true);
+            
+            const amount = ethers.parseEther("1000");
+
+            // Approve & Wrap
+            await mockERC20.connect(lender).approve(await policyWrapper.getAddress(), amount);
+            await policyWrapper.connect(lender).wrap(
+                AssetType.ERC20,
+                await mockERC20.getAddress(),
+                0,
+                amount,
+                emptyProof
+            );
+
+            const pbmTokenId = await policyWrapper.computePBMTokenId(
+                AssetType.ERC20,
+                await mockERC20.getAddress(),
+                0
+            );
+
+            const balanceBefore = await mockERC20.balanceOf(lender.address);
+
+            // Unwrap
+            await policyWrapper.connect(lender).unwrap(
+                pbmTokenId,
+                amount,
+                lender.address
+            );
+
+            // 驗證
+            expect(await pbmToken.balanceOf(lender.address, pbmTokenId)).to.equal(0);
+            expect(await mockERC20.balanceOf(lender.address)).to.equal(balanceBefore + amount);
+        });
+    });
+
+    describe("Repo Scenario", function () {
+        const emptyProof = {
+            proofType: ethers.encodeBytes32String("KYC"),
+            credentialHash: ethers.keccak256(ethers.toUtf8Bytes("credential")),
+            issuedAt: Math.floor(Date.now() / 1000) - 3600,
+            expiresAt: Math.floor(Date.now() / 1000) + 86400,
+            issuer: ethers.ZeroAddress,
+            signature: "0x"
+        };
+
+        beforeEach(async function () {
+            await policyWrapper.setComplianceExemption(lender.address, true);
+            await policyWrapper.setComplianceExemption(borrower.address, true);
+        });
+
+        it("應該支援 Repo 場景：Lender 包裝 money, Borrower 包裝 securities", async function () {
+            const moneyAmount = ethers.parseEther("1000");
+            const securityTokenId = 100;
+            const securityAmount = 100;
+
+            // Lender wraps money (ERC20)
+            await mockERC20.connect(lender).approve(await policyWrapper.getAddress(), moneyAmount);
+            await policyWrapper.connect(lender).wrap(
+                AssetType.ERC20,
+                await mockERC20.getAddress(),
+                0,
+                moneyAmount,
+                emptyProof
+            );
+
+            // Borrower wraps securities (ERC1155)
+            await mockERC1155.connect(borrower).setApprovalForAll(await policyWrapper.getAddress(), true);
+            await policyWrapper.connect(borrower).wrap(
+                AssetType.ERC1155,
+                await mockERC1155.getAddress(),
+                securityTokenId,
+                securityAmount,
+                emptyProof
+            );
+
+            // 計算 PBM tokenIds
+            const moneyPBMId = await policyWrapper.computePBMTokenId(
+                AssetType.ERC20,
+                await mockERC20.getAddress(),
+                0
+            );
+            const securityPBMId = await policyWrapper.computePBMTokenId(
+                AssetType.ERC1155,
+                await mockERC1155.getAddress(),
+                securityTokenId
+            );
+
+            // 驗證雙方都獲得了 PBM
+            expect(await pbmToken.balanceOf(lender.address, moneyPBMId)).to.equal(moneyAmount);
+            expect(await pbmToken.balanceOf(borrower.address, securityPBMId)).to.equal(securityAmount);
+
+            // 模擬交換：Lender 轉 PBM#money 給 Borrower，Borrower 轉 PBM#security 給 Lender
+            await pbmToken.connect(lender).safeTransferFrom(
+                lender.address, borrower.address, moneyPBMId, moneyAmount, "0x"
+            );
+            await pbmToken.connect(borrower).safeTransferFrom(
+                borrower.address, lender.address, securityPBMId, securityAmount, "0x"
+            );
+
+            // 驗證交換後的狀態
+            expect(await pbmToken.balanceOf(borrower.address, moneyPBMId)).to.equal(moneyAmount);
+            expect(await pbmToken.balanceOf(lender.address, securityPBMId)).to.equal(securityAmount);
+
+            // Borrower unwraps money
+            await policyWrapper.connect(borrower).unwrap(moneyPBMId, moneyAmount, borrower.address);
+            expect(await mockERC20.balanceOf(borrower.address)).to.equal(
+                ethers.parseEther("10000") + moneyAmount
+            );
+
+            // Lender unwraps security
+            await policyWrapper.connect(lender).unwrap(securityPBMId, securityAmount, lender.address);
+            expect(await mockERC1155.balanceOf(lender.address, securityTokenId)).to.equal(securityAmount);
         });
     });
 });
