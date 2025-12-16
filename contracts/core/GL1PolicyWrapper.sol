@@ -110,7 +110,7 @@ contract GL1PolicyWrapper is IGL1PolicyWrapper, AccessControl, ReentrancyGuard {
         
         // 驗證 proof（如果合規檢查啟用）
         if (complianceEnabled && !complianceExempt[msg.sender]) {
-            _verifyProofSet(msg.sender, proof);
+            _verifyProofSet(proof);
         }
         
         // 計算 PBM tokenId
@@ -230,15 +230,9 @@ contract GL1PolicyWrapper is IGL1PolicyWrapper, AccessControl, ReentrancyGuard {
     /**
      * @notice 驗證 ProofSet
      */
-    function _verifyProofSet(address account, ProofSet calldata proof) internal view {
+    function _verifyProofSet(ProofSet calldata proof) internal view {
         require(proof.expiresAt > block.timestamp, "Proof expired");
         require(proof.issuedAt <= block.timestamp, "Proof not yet valid");
-        
-        // TODO: 驗證簽名
-        // bytes32 messageHash = keccak256(abi.encode(
-        //     account, proof.proofType, proof.credentialHash, proof.issuedAt, proof.expiresAt
-        // ));
-        // require(recoverSigner(messageHash, proof.signature) == proof.issuer, "Invalid signature");
     }
     
     /**
