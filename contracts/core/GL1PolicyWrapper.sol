@@ -96,7 +96,39 @@ contract GL1PolicyWrapper is IGL1PolicyWrapper, AccessControl, ReentrancyGuard {
     }
     
     /**
-     * @notice 包裝底層資產
+     * @notice 包裝底層資產，將 ERC20/ERC721/ERC1155 轉換為 PBM Token
+     * 
+     * ═══════════════════════════════════════════════════════════════════
+     * 參數說明：
+     * ═══════════════════════════════════════════════════════════════════
+     * @param assetType     資產類型，可以是：
+     *                      - AssetType.ERC20:   同質化代幣（如 USDT, USDC）
+     *                      - AssetType.ERC721:  非同質化代幣（NFT，每個獨一無二）
+     *                      - AssetType.ERC1155: 半同質化代幣（可有多個相同的 NFT）
+     * 
+     * @param assetAddress  底層資產的合約地址
+     *                      例如：USDT 合約地址、某個 NFT 系列的合約地址
+     * 
+     * @param assetTokenId  底層資產的 tokenId
+     *                      - ERC20:   傳 0（因為 ERC20 沒有 tokenId 概念）
+     *                      - ERC721:  傳該 NFT 的唯一編號
+     *                      - ERC1155: 傳該代幣類型的編號
+     * 
+     * @param amount        要包裝的數量
+     *                      - ERC20:   可以是任意數量（如 100 USDT）
+     *                      - ERC721:  必須是 1（因為 NFT 不可分割）
+     *                      - ERC1155: 可以是任意數量
+     * 
+     * @param proof         合規證明集，包含 KYC/AML 驗證資訊
+     *                      - proofType:      證明類型（"KYC", "AML", "ACCREDITATION"）
+     *                      - credentialHash: 鏈下憑證的雜湊值
+     *                      - issuedAt:       發行時間
+     *                      - expiresAt:      過期時間
+     *                      - issuer:         發行機構地址
+     *                      - signature:      發行機構的數位簽名
+     * 
+     * @return pbmTokenId   產生的 PBM tokenId，用於之後的轉移和解包
+     * ═══════════════════════════════════════════════════════════════════
      */
     function wrap(
         AssetType assetType,
@@ -105,41 +137,55 @@ contract GL1PolicyWrapper is IGL1PolicyWrapper, AccessControl, ReentrancyGuard {
         uint256 amount,
         ProofSet calldata proof
     ) external override nonReentrant returns (uint256 pbmTokenId) {
+        // 確保資產地址不是零地址（零地址代表無效地址）
         require(assetAddress != address(0), "Invalid asset address");
+        
+        // 確保要包裝的數量大於 0
         require(amount > 0, "Amount must be > 0");
         
-        // 驗證 proof（如果合規檢查啟用）
+        // 如果合規檢查功能開啟，且調用者不在豁免名單中
+        // 則驗證使用者提供的 KYC/AML 證明是否有效
         if (complianceEnabled && !complianceExempt[msg.sender]) {
-            _verifyProofSet(proof);
+            _verifyProofSet(proof);  // 檢查證明是否過期、是否已生效
         }
-        
-        // 計算 PBM tokenId
+  
+        // 計算 PBM Token 的唯一識別碼
+        // 使用 hash(資產類型 + 合約地址 + tokenId) 產生唯一的 PBM tokenId
+        // 這樣同一種底層資產會對應到同一個 PBM tokenId
         pbmTokenId = computePBMTokenId(assetType, assetAddress, assetTokenId);
         
-        // 記錄資產資訊（首次包裝時）
+        // 記錄資產資訊
+        // 如果這是第一次包裝這種資產（地址為空代表尚未記錄）
+        // 則儲存資產的詳細資訊，供之後解包時使用
         if (assets[pbmTokenId].assetAddress == address(0)) {
             assets[pbmTokenId] = AssetInfo({
-                assetType: assetType,
-                assetAddress: assetAddress,
-                assetTokenId: assetTokenId
+                assetType: assetType,        // 記錄資產類型
+                assetAddress: assetAddress,  // 記錄合約地址
+                assetTokenId: assetTokenId   // 記錄 tokenId
             });
         }
         
-        // 轉移底層資產到 wrapper
+        // 轉移底層資產到本合約
+        // 從使用者錢包將底層資產轉移到這個 Wrapper 合約保管
+        // 根據不同的資產類型，會調用對應的 transferFrom 函式
         _transferAssetIn(assetType, assetAddress, assetTokenId, amount);
         
-        // 鑄造 PBM
+        // 鑄造相應數量的 PBM Token (ERC1155) 給調用者
+        // 使用者之後可以用這個 PBM Token 進行合規轉移
         pbmToken.mint(msg.sender, pbmTokenId, amount);
         
+        // 發送事件通知
+        // 發送 TokenWrapped 事件，讓前端和區塊鏈瀏覽器可以追蹤這筆操作
         emit TokenWrapped(
-            msg.sender,
-            pbmTokenId,
-            assetType,
-            assetAddress,
-            assetTokenId,
-            amount
+            msg.sender,      // 執行包裝的使用者地址
+            pbmTokenId,      // 產生的 PBM tokenId
+            assetType,       // 底層資產類型
+            assetAddress,    // 底層資產合約地址
+            assetTokenId,    // 底層資產 tokenId
+            amount           // 包裝的數量
         );
         
+        // 回傳 PBM tokenId 給調用者
         return pbmTokenId;
     }
     
