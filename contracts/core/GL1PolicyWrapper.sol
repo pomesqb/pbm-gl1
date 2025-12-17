@@ -9,12 +9,21 @@ import "@openzeppelin/contracts/token/ERC1155/IERC1155.sol";
 import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import "../interfaces/IGL1PolicyWrapper.sol";
 import "../interfaces/IPolicyManager.sol";
+import "../interfaces/IFXRateProvider.sol";
 import "../token/PBMToken.sol";
 
 /**
  * @title GL1PolicyWrapper
  * @notice GL1 PBM Policy Wrapper - 單一合約處理所有類型的底層資產
- * @dev 實作 wrap/unwrap 功能，整合合規檢查
+ * @dev 實作 wrap/unwrap 功能，整合合規檢查與跨境支付匯率轉換
+ *
+ * ═══════════════════════════════════════════════════════════════════
+ * 跨境支付場景 (StraitsX/Alipay+ 模式)：
+ * ═══════════════════════════════════════════════════════════════════
+ * 1. 旅客使用本國貨幣支付 (例如：CNY, TWD)
+ * 2. 系統查詢即時匯率進行轉換
+ * 3. 商家收到當地貨幣結算 (例如：SGD)
+ * ═══════════════════════════════════════════════════════════════════
  */
 contract GL1PolicyWrapper is IGL1PolicyWrapper, AccessControl, ReentrancyGuard {
     using SafeERC20 for IERC20;
@@ -49,6 +58,32 @@ contract GL1PolicyWrapper is IGL1PolicyWrapper, AccessControl, ReentrancyGuard {
     }
     mapping(bytes32 => ComplianceProof) public complianceProofs;
     
+    // ============ FX Rate Provider (跨境支付匯率) ============
+    
+    // FX 匯率提供者
+    IFXRateProvider public fxRateProvider;
+    
+    // 資產地址 → 貨幣代碼 (例如：USDC 地址 → "USD")
+    mapping(address => bytes32) public assetCurrency;
+    
+    // 是否啟用 FX 轉換功能
+    bool public fxEnabled = false;
+    
+    // FX 交易記錄結構 - 記錄每筆跨境支付的匯率資訊
+    struct FXTransaction {
+        bytes32 sourceCurrency;     // 來源幣種 (TWD)
+        bytes32 targetCurrency;     // 目標幣種 (SGD)
+        uint256 sourceAmount;       // 來源金額 (3200 TWD)
+        uint256 targetAmount;       // 目標金額 (100 SGD)
+        uint256 rateUsed;           // 使用的匯率 (18 decimals)
+        uint256 timestamp;          // 交易時間
+        address payer;              // 付款人 (遊客)
+        address payee;              // 收款人 (商家)
+    }
+    
+    // pbmTokenId → FX 交易記錄
+    mapping(uint256 => FXTransaction) public fxTransactions;
+    
     event ComplianceCheckInitiated(
         bytes32 indexed txHash,
         address indexed from,
@@ -66,6 +101,31 @@ contract GL1PolicyWrapper is IGL1PolicyWrapper, AccessControl, ReentrancyGuard {
     
     event PolicyManagerUpdated(address indexed oldManager, address indexed newManager);
     event ComplianceExemptionSet(address indexed account, bool exempt);
+    
+    // FX 相關事件
+    event FXRateProviderUpdated(address indexed oldProvider, address indexed newProvider);
+    event AssetCurrencySet(address indexed asset, bytes32 currency);
+    event FXConversionApplied(
+        address indexed user,
+        bytes32 indexed fromCurrency,
+        bytes32 indexed toCurrency,
+        uint256 originalAmount,
+        uint256 convertedAmount,
+        uint256 rateUsed
+    );
+    
+    // 跨境支付事件 - 包含完整交易資訊
+    event CrossBorderPaymentInitiated(
+        uint256 indexed pbmTokenId,
+        address indexed payer,
+        address indexed payee,
+        bytes32 sourceCurrency,
+        bytes32 targetCurrency,
+        uint256 sourceAmount,
+        uint256 targetAmount,
+        uint256 rateUsed,
+        uint256 timestamp
+    );
     
     constructor(
         bytes32 _jurisdictionCode,
@@ -357,7 +417,366 @@ contract GL1PolicyWrapper is IGL1PolicyWrapper, AccessControl, ReentrancyGuard {
         return complianceProofs[txHash];
     }
     
-    // ============ ERC1155 Receiver ============
+    /**
+     * @notice 帶匯率轉換的包裝 - 適用於跨境支付
+     * @dev 旅客使用本國貨幣支付，系統自動轉換為商家收款幣種
+     * 
+     * ═══════════════════════════════════════════════════════════════════
+     * 使用場景：
+     * ═══════════════════════════════════════════════════════════════════
+     * 1. 台灣遊客在新加坡消費
+     * 2. 遊客錢包扣款 TWD 計價的穩定幣
+     * 3. 系統查詢 TWD/SGD 匯率並轉換
+     * 4. 商家收到等值 SGD 的 PBM
+     * ═══════════════════════════════════════════════════════════════════
+     * 
+     * @param sourceAsset 來源資產地址 (遊客持有的穩定幣)
+     * @param sourceAmount 來源金額
+     * @param targetCurrency 目標幣種代碼 (商家收款幣種，如 "SGD")
+     * @param proof 合規證明
+     * @return pbmTokenId 產生的 PBM tokenId
+     * @return convertedAmount 轉換後金額
+     */
+    function wrapWithFXConversion(
+        address sourceAsset,
+        uint256 sourceAmount,
+        bytes32 targetCurrency,
+        ProofSet calldata proof
+    ) external nonReentrant returns (uint256 pbmTokenId, uint256 convertedAmount) {
+        require(fxEnabled, "FX conversion not enabled");
+        require(address(fxRateProvider) != address(0), "FX provider not set");
+        require(sourceAsset != address(0), "Invalid source asset");
+        require(sourceAmount > 0, "Amount must be > 0");
+        
+        // 取得來源資產的幣種
+        bytes32 sourceCurrency = assetCurrency[sourceAsset];
+        require(sourceCurrency != bytes32(0), "Source currency not configured");
+        
+        // 驗證合規證明
+        if (complianceEnabled && !complianceExempt[msg.sender]) {
+            _verifyProofSet(proof);
+        }
+        
+        // 查詢匯率並轉換金額
+        uint256 rateUsed;
+        (convertedAmount, rateUsed) = fxRateProvider.convert(
+            sourceCurrency,
+            targetCurrency,
+            sourceAmount
+        );
+        
+        require(convertedAmount > 0, "Conversion resulted in zero");
+        
+        // 轉入來源資產
+        IERC20(sourceAsset).safeTransferFrom(msg.sender, address(this), sourceAmount);
+        
+        // 計算 PBM tokenId (基於來源資產)
+        pbmTokenId = computePBMTokenId(AssetType.ERC20, sourceAsset, 0);
+        
+        // 記錄資產資訊
+        if (assets[pbmTokenId].assetAddress == address(0)) {
+            assets[pbmTokenId] = AssetInfo({
+                assetType: AssetType.ERC20,
+                assetAddress: sourceAsset,
+                assetTokenId: 0
+            });
+        }
+        
+        // 鑄造 PBM (使用轉換後金額作為價值記錄)
+        pbmToken.mint(msg.sender, pbmTokenId, sourceAmount);
+        
+        // 發送事件
+        emit FXConversionApplied(
+            msg.sender,
+            sourceCurrency,
+            targetCurrency,
+            sourceAmount,
+            convertedAmount,
+            rateUsed
+        );
+        
+        emit TokenWrapped(
+            msg.sender,
+            pbmTokenId,
+            AssetType.ERC20,
+            sourceAsset,
+            0,
+            sourceAmount
+        );
+        
+        return (pbmTokenId, convertedAmount);
+    }
+    
+    /**
+     * @notice 跨境支付 - 以商家報價幣種為準（正確流程）
+     * @dev 商家標價為目標幣種金額，系統計算遊客需支付的來源幣種金額
+     * 
+     * ═══════════════════════════════════════════════════════════════════
+     * 正確的跨境支付流程：
+     * ═══════════════════════════════════════════════════════════════════
+     * 1. 商家商品標價: 100 SGD
+     * 2. 遊客掃 QR Code
+     * 3. 系統查詢 SGD/TWD 匯率 (假設 1 SGD = 23.70 TWD)
+     * 4. 遊客 App 顯示: "支付 2370 TWD 購買 100 SGD 商品"
+     * 5. 遊客確認付款
+     * 6. 系統扣款 2370 TWD，記錄匯率
+     * 7. 鑄造 PBM 給商家
+     * ═══════════════════════════════════════════════════════════════════
+     * 
+     * @param targetAmount 商家要收的金額 (例如 100 SGD)
+     * @param targetCurrency 商家幣種代碼 (例如 keccak256("SGD"))
+     * @param sourceAsset 遊客支付的資產地址 (例如 TWD 穩定幣)
+     * @param merchant 商家地址
+     * @param proof 合規證明
+     * @return pbmTokenId 產生的 PBM tokenId
+     * @return sourceAmountPaid 遊客實際支付金額
+     * @return rateUsed 使用的匯率
+     */
+    function payWithFXConversion(
+        uint256 targetAmount,
+        bytes32 targetCurrency,
+        address sourceAsset,
+        address merchant,
+        ProofSet calldata proof
+    ) external nonReentrant returns (
+        uint256 pbmTokenId,
+        uint256 sourceAmountPaid,
+        uint256 rateUsed
+    ) {
+        require(fxEnabled, "FX conversion not enabled");
+        require(address(fxRateProvider) != address(0), "FX provider not set");
+        require(targetAmount > 0, "Target amount must be > 0");
+        require(sourceAsset != address(0), "Invalid source asset");
+        require(merchant != address(0), "Invalid merchant address");
+        
+        // 取得來源資產的幣種
+        bytes32 sourceCurrency = assetCurrency[sourceAsset];
+        require(sourceCurrency != bytes32(0), "Source currency not configured");
+        
+        // 驗證合規證明
+        if (complianceEnabled && !complianceExempt[msg.sender]) {
+            _verifyProofSet(proof);
+        }
+        
+        // 查詢匯率：目標幣種 → 來源幣種（例如 SGD → TWD）
+        // 這樣可以計算：要得到 100 SGD，需要多少 TWD
+        (sourceAmountPaid, rateUsed) = fxRateProvider.convert(
+            targetCurrency,  // SGD
+            sourceCurrency,  // TWD
+            targetAmount     // 100 SGD → 計算出 2370 TWD
+        );
+        
+        require(sourceAmountPaid > 0, "Conversion resulted in zero");
+        
+        // 檢查遊客餘額
+        require(
+            IERC20(sourceAsset).balanceOf(msg.sender) >= sourceAmountPaid,
+            "Insufficient balance"
+        );
+        
+        // 轉入來源資產（從遊客扣款）
+        IERC20(sourceAsset).safeTransferFrom(msg.sender, address(this), sourceAmountPaid);
+        
+        // 計算 PBM tokenId (基於來源資產)
+        pbmTokenId = computePBMTokenId(AssetType.ERC20, sourceAsset, 0);
+        
+        // 記錄資產資訊
+        if (assets[pbmTokenId].assetAddress == address(0)) {
+            assets[pbmTokenId] = AssetInfo({
+                assetType: AssetType.ERC20,
+                assetAddress: sourceAsset,
+                assetTokenId: 0
+            });
+        }
+        
+        // 記錄 FX 交易詳情
+        fxTransactions[pbmTokenId] = FXTransaction({
+            sourceCurrency: sourceCurrency,
+            targetCurrency: targetCurrency,
+            sourceAmount: sourceAmountPaid,
+            targetAmount: targetAmount,
+            rateUsed: rateUsed,
+            timestamp: block.timestamp,
+            payer: msg.sender,
+            payee: merchant
+        });
+        
+        // 鑄造 PBM 給商家（直接轉給商家）
+        pbmToken.mint(merchant, pbmTokenId, sourceAmountPaid);
+        
+        // 發送完整的跨境支付事件
+        emit CrossBorderPaymentInitiated(
+            pbmTokenId,
+            msg.sender,      // payer (遊客)
+            merchant,        // payee (商家)
+            sourceCurrency,  // TWD
+            targetCurrency,  // SGD
+            sourceAmountPaid,// 2370 TWD
+            targetAmount,    // 100 SGD
+            rateUsed,
+            block.timestamp
+        );
+        
+        emit TokenWrapped(
+            msg.sender,
+            pbmTokenId,
+            AssetType.ERC20,
+            sourceAsset,
+            0,
+            sourceAmountPaid
+        );
+        
+        return (pbmTokenId, sourceAmountPaid, rateUsed);
+    }
+    
+    /**
+     * @notice 查詢 FX 交易記錄
+     * @param pbmTokenId PBM tokenId
+     * @return 交易記錄
+     */
+    function getFXTransaction(uint256 pbmTokenId) external view returns (FXTransaction memory) {
+        return fxTransactions[pbmTokenId];
+    }
+    
+    /**
+     * @notice 跨境支付結算 - 商家解包並接收當地貨幣
+     * @dev 適用於 PBM 轉移給商家後，商家提取當地貨幣
+     * 
+     * @param pbmTokenId PBM tokenId
+     * @param amount 解包數量
+     * @param targetAsset 目標資產地址 (商家收款的穩定幣)
+     * @param beneficiary 收款人地址
+     * @return settledAmount 結算金額
+     */
+    function settleCrossBorderPayment(
+        uint256 pbmTokenId,
+        uint256 amount,
+        address targetAsset,
+        address beneficiary
+    ) external nonReentrant returns (uint256 settledAmount) {
+        require(fxEnabled, "FX conversion not enabled");
+        require(address(fxRateProvider) != address(0), "FX provider not set");
+        require(amount > 0, "Amount must be > 0");
+        require(beneficiary != address(0), "Invalid beneficiary");
+        require(targetAsset != address(0), "Invalid target asset");
+        
+        AssetInfo memory assetInfo = assets[pbmTokenId];
+        require(assetInfo.assetAddress != address(0), "Unknown PBM tokenId");
+        
+        // 檢查用戶持有足夠的 PBM
+        require(
+            pbmToken.balanceOf(msg.sender, pbmTokenId) >= amount,
+            "Insufficient PBM balance"
+        );
+        
+        // 取得幣種資訊
+        bytes32 sourceCurrency = assetCurrency[assetInfo.assetAddress];
+        bytes32 targetCurrency = assetCurrency[targetAsset];
+        require(sourceCurrency != bytes32(0), "Source currency not configured");
+        require(targetCurrency != bytes32(0), "Target currency not configured");
+        
+        // 銷毀 PBM
+        pbmToken.burn(msg.sender, pbmTokenId, amount);
+        
+        // 如果來源和目標不同，需要進行 FX 轉換
+        if (sourceCurrency != targetCurrency) {
+            uint256 rateUsed;
+            (settledAmount, rateUsed) = fxRateProvider.convert(
+                sourceCurrency,
+                targetCurrency,
+                amount
+            );
+            
+            emit FXConversionApplied(
+                msg.sender,
+                sourceCurrency,
+                targetCurrency,
+                amount,
+                settledAmount,
+                rateUsed
+            );
+        } else {
+            settledAmount = amount;
+        }
+        
+        // 轉移目標資產給商家
+        // 注意：這裡假設合約持有足夠的目標資產（由流動性提供者預先存入）
+        IERC20(targetAsset).safeTransfer(beneficiary, settledAmount);
+        
+        emit TokenUnwrapped(msg.sender, pbmTokenId, amount, beneficiary);
+        
+        return settledAmount;
+    }
+    
+    /**
+     * @notice 查詢 FX 轉換預覽
+     * @param sourceAsset 來源資產
+     * @param amount 金額
+     * @param targetCurrency 目標幣種
+     * @return convertedAmount 預計轉換金額
+     * @return rate 使用的匯率
+     */
+    function previewFXConversion(
+        address sourceAsset,
+        uint256 amount,
+        bytes32 targetCurrency
+    ) external view returns (uint256 convertedAmount, uint256 rate) {
+        require(address(fxRateProvider) != address(0), "FX provider not set");
+        
+        bytes32 sourceCurrency = assetCurrency[sourceAsset];
+        require(sourceCurrency != bytes32(0), "Source currency not configured");
+        
+        return fxRateProvider.convert(sourceCurrency, targetCurrency, amount);
+    }
+    
+    // ============ FX Admin Functions ============
+    
+    /**
+     * @notice 設定 FX 匯率提供者
+     */
+    function setFXRateProvider(address provider) external onlyRole(POLICY_ADMIN_ROLE) {
+        address oldProvider = address(fxRateProvider);
+        fxRateProvider = IFXRateProvider(provider);
+        emit FXRateProviderUpdated(oldProvider, provider);
+    }
+    
+    /**
+     * @notice 設定資產對應的幣種
+     * @param asset 資產地址 (如 USDC 合約)
+     * @param currency 幣種代碼 (如 keccak256("USD"))
+     */
+    function setAssetCurrency(
+        address asset,
+        bytes32 currency
+    ) external onlyRole(POLICY_ADMIN_ROLE) {
+        require(asset != address(0), "Invalid asset");
+        assetCurrency[asset] = currency;
+        emit AssetCurrencySet(asset, currency);
+    }
+    
+    /**
+     * @notice 批量設定資產幣種
+     */
+    function setAssetCurrencies(
+        address[] calldata assetList,
+        bytes32[] calldata currencies
+    ) external onlyRole(POLICY_ADMIN_ROLE) {
+        require(assetList.length == currencies.length, "Length mismatch");
+        
+        for (uint256 i = 0; i < assetList.length; i++) {
+            require(assetList[i] != address(0), "Invalid asset");
+            assetCurrency[assetList[i]] = currencies[i];
+            emit AssetCurrencySet(assetList[i], currencies[i]);
+        }
+    }
+    
+    /**
+     * @notice 啟用/停用 FX 轉換功能
+     */
+    function setFXEnabled(bool enabled) external onlyRole(POLICY_ADMIN_ROLE) {
+        fxEnabled = enabled;
+    }
+    
     
     function onERC1155Received(
         address,
