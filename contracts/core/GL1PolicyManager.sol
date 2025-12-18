@@ -10,9 +10,23 @@ import "../interfaces/IComplianceRule.sol";
 /**
  * @title GL1PolicyManager
  * @notice 協調身份驗證、規則引擎和 Chainlink ACE
- * @dev GL1 架構的核心編排層
+ * @dev GL1 架構的核心編排層，支援多方 Repo 交易驗證
  */
 contract GL1PolicyManager is IPolicyManager, AccessControl {
+    
+    // ============ Repo 多方驗證支援 ============
+    
+    /**
+     * @notice 參與方角色 (用於 Repo 交易)
+     */
+    enum PartyRole {
+        NONE,       // 未指定
+        LENDER,     // 貸款人 (提供現金)
+        BORROWER    // 借款人 (提供抵押品)
+    }
+    
+    // 角色 → 規則集映射 (Lender 和 Borrower 可能需要不同的驗證)
+    mapping(PartyRole => bytes32[]) public partyRolesToRules;
     bytes32 public constant RULE_ADMIN_ROLE = keccak256("RULE_ADMIN_ROLE");
     bytes32 public constant JURISDICTION_ADMIN_ROLE = keccak256("JURISDICTION_ADMIN_ROLE");
 
@@ -312,4 +326,114 @@ contract GL1PolicyManager is IPolicyManager, AccessControl {
     function getActiveRuleSetCount() external view returns (uint256) {
         return activeRuleSets.length;
     }
+    
+    // ============ Repo 多方驗證函數 ============
+    
+    /**
+     * @notice 驗證特定角色的合規性 (用於 Repo 交易)
+     * @dev 根據角色 (Lender/Borrower) 執行對應的規則集
+     * @param party 要驗證的地址
+     * @param role 參與方角色
+     * @param jurisdictionCode 司法管轄區代碼
+     * @return isCompliant 是否合規
+     * @return failureReason 失敗原因
+     * @return appliedRules 已套用的規則
+     */
+    function verifyPartyCompliance(
+        address party,
+        PartyRole role,
+        bytes32 jurisdictionCode
+    ) external returns (
+        bool isCompliant,
+        string memory failureReason,
+        string[] memory appliedRules
+    ) {
+        // 先驗證身份
+        (bool identityValid, string memory identityError) = this.verifyIdentity(
+            party,
+            address(this),
+            jurisdictionCode
+        );
+        
+        if (!identityValid) {
+            appliedRules = new string[](1);
+            appliedRules[0] = "IDENTITY";
+            return (false, identityError, appliedRules);
+        }
+        
+        // 獲取該角色的規則集
+        bytes32[] memory roleRules = partyRolesToRules[role];
+        
+        // 如果沒有配置角色特定規則，使用管轄區規則
+        if (roleRules.length == 0) {
+            return this.executeComplianceRules(party, address(this), 0, jurisdictionCode);
+        }
+        
+        appliedRules = new string[](roleRules.length);
+        
+        for (uint256 i = 0; i < roleRules.length; i++) {
+            RuleSet memory rule = ruleSets[roleRules[i]];
+            
+            if (!rule.isActive) {
+                continue;
+            }
+            
+            appliedRules[i] = rule.ruleType;
+            
+            bool rulePassed;
+            string memory ruleError;
+            
+            if (rule.isOnChain) {
+                (rulePassed, ruleError) = _executeOnChainRule(
+                    rule.executorAddress,
+                    party,
+                    address(this),
+                    0
+                );
+            } else {
+                (rulePassed, ruleError) = _executeOffChainRule(
+                    rule.executorAddress,
+                    party,
+                    address(this),
+                    0,
+                    jurisdictionCode
+                );
+            }
+            
+            emit ComplianceRuleExecuted(roleRules[i], rulePassed, ruleError);
+            
+            if (!rulePassed) {
+                return (false, ruleError, appliedRules);
+            }
+        }
+        
+        return (true, "", appliedRules);
+    }
+    
+    /**
+     * @notice 設定特定角色的規則集
+     * @param role 參與方角色
+     * @param ruleSetIds 規則集 ID 列表
+     */
+    function setPartyRoleRules(
+        PartyRole role,
+        bytes32[] memory ruleSetIds
+    ) external onlyRole(RULE_ADMIN_ROLE) {
+        require(role != PartyRole.NONE, "Invalid role");
+        
+        // 驗證所有規則集都存在
+        for (uint256 i = 0; i < ruleSetIds.length; i++) {
+            require(ruleSets[ruleSetIds[i]].ruleSetId != bytes32(0), "RuleSet does not exist");
+        }
+        
+        partyRolesToRules[role] = ruleSetIds;
+    }
+    
+    /**
+     * @notice 獲取角色的規則集
+     */
+    function getPartyRoleRules(PartyRole role) external view returns (bytes32[] memory) {
+        return partyRolesToRules[role];
+    }
 }
+
