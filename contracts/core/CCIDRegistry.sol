@@ -20,6 +20,12 @@ contract CCIDRegistry is ICCIDProvider, AccessControl {
     bytes32 public constant TIER_ENHANCED = keccak256("TIER_ENHANCED");
     bytes32 public constant TIER_INSTITUTIONAL = keccak256("TIER_INSTITUTIONAL");
     
+    // 身份標籤
+    bytes32 public constant TAG_RESIDENT = keccak256("RESIDENT");           // 本國居民
+    bytes32 public constant TAG_NON_RESIDENT = keccak256("NON_RESIDENT");   // 外國人/非居民
+    bytes32 public constant TAG_CORPORATE = keccak256("CORPORATE");         // 法人
+    bytes32 public constant TAG_SANCTIONED = keccak256("SANCTIONED");       // 黑名單
+    
     // KYC 有效期限（預設 365 天）
     uint256 public kycValidityPeriod = 365 days;
     
@@ -42,6 +48,10 @@ contract CCIDRegistry is ICCIDProvider, AccessControl {
     // 鏈 ID → 是否支援
     mapping(bytes32 => bool) public supportedChains;
     
+    // ============ 居民身份標籤映射 ============
+    // 地址 → 身份標籤 (RESIDENT, NON_RESIDENT, CORPORATE, SANCTIONED)
+    mapping(address => bytes32) public identityTags;
+    
     event IdentityRegistered(address indexed account, bytes32 tier, uint256 timestamp);
     event IdentityUpdated(address indexed account, bytes32 newTier);
     event IdentityRevoked(address indexed account);
@@ -54,6 +64,10 @@ contract CCIDRegistry is ICCIDProvider, AccessControl {
     );
     event ChainSupportUpdated(bytes32 indexed chainId, bool supported);
     event KYCValidityPeriodUpdated(uint256 newPeriod);
+    
+    // 居民身份標籤事件
+    event IdentityTagSet(address indexed account, bytes32 indexed oldTag, bytes32 indexed newTag);
+    event SanctionStatusChanged(address indexed account, bool isSanctioned);
     
     constructor() {
         _grantRole(DEFAULT_ADMIN_ROLE, msg.sender);
@@ -303,5 +317,123 @@ contract CCIDRegistry is ICCIDProvider, AccessControl {
             identity.isActive,
             block.timestamp > identity.kycTimestamp + kycValidityPeriod
         );
+    }
+    
+    /**
+     * @notice 設定帳戶的身份標籤
+     * @dev 僅限 KYC_PROVIDER_ROLE 調用
+     * @param account 帳戶地址
+     * @param tag 身份標籤 (TAG_RESIDENT, TAG_NON_RESIDENT, TAG_CORPORATE, TAG_SANCTIONED)
+     */
+    function setIdentityTag(
+        address account,
+        bytes32 tag
+    ) external onlyRole(KYC_PROVIDER_ROLE) {
+        require(account != address(0), "Invalid account");
+        require(
+            tag == TAG_RESIDENT || 
+            tag == TAG_NON_RESIDENT || 
+            tag == TAG_CORPORATE || 
+            tag == TAG_SANCTIONED ||
+            tag == bytes32(0), // 允許清除標籤
+            "Invalid tag"
+        );
+        
+        bytes32 oldTag = identityTags[account];
+        identityTags[account] = tag;
+        
+        emit IdentityTagSet(account, oldTag, tag);
+        
+        // 如果設為黑名單，發送額外事件
+        if (tag == TAG_SANCTIONED && oldTag != TAG_SANCTIONED) {
+            emit SanctionStatusChanged(account, true);
+        } else if (oldTag == TAG_SANCTIONED && tag != TAG_SANCTIONED) {
+            emit SanctionStatusChanged(account, false);
+        }
+    }
+    
+    /**
+     * @notice 批量設定身份標籤
+     */
+    function batchSetIdentityTags(
+        address[] calldata accounts,
+        bytes32[] calldata tags
+    ) external onlyRole(KYC_PROVIDER_ROLE) {
+        require(accounts.length == tags.length, "Array length mismatch");
+        
+        for (uint256 i = 0; i < accounts.length; i++) {
+            if (accounts[i] != address(0)) {
+                bytes32 oldTag = identityTags[accounts[i]];
+                identityTags[accounts[i]] = tags[i];
+                emit IdentityTagSet(accounts[i], oldTag, tags[i]);
+            }
+        }
+    }
+    
+    /**
+     * @notice 獲取帳戶的身份標籤
+     * @dev 實作 ICCIDProvider 介面
+     */
+    function getIdentityTag(address account) external view override returns (bytes32) {
+        return identityTags[account];
+    }
+    
+    /**
+     * @notice 檢查帳戶是否為非居民（外國人）
+     * @dev 用於外匯額度檢查的觸發條件
+     */
+    function isNonResident(address account) external view override returns (bool) {
+        return identityTags[account] == TAG_NON_RESIDENT;
+    }
+    
+    /**
+     * @notice 檢查帳戶是否在制裁名單（黑名單）
+     * @dev 用於 AML/制裁檢查
+     */
+    function isSanctioned(address account) external view override returns (bool) {
+        return identityTags[account] == TAG_SANCTIONED;
+    }
+    
+    /**
+     * @notice 檢查帳戶是否為法人
+     */
+    function isCorporate(address account) external view returns (bool) {
+        return identityTags[account] == TAG_CORPORATE;
+    }
+    
+    /**
+     * @notice 檢查帳戶是否為本國居民
+     */
+    function isResident(address account) external view returns (bool) {
+        return identityTags[account] == TAG_RESIDENT;
+    }
+    
+    /**
+     * @notice 在註冊身份時同時設定標籤
+     * @param account 帳戶地址
+     * @param identityHash 身份雜湊
+     * @param tier KYC 等級
+     * @param tag 身份標籤
+     */
+    function registerIdentityWithTag(
+        address account,
+        bytes32 identityHash,
+        bytes32 tier,
+        bytes32 tag
+    ) external onlyRole(KYC_PROVIDER_ROLE) {
+        require(account != address(0), "Invalid account");
+        require(identityHash != bytes32(0), "Invalid identity hash");
+        
+        identities[account] = Identity({
+            identityHash: identityHash,
+            kycTimestamp: block.timestamp,
+            tier: tier,
+            isActive: true
+        });
+        
+        identityTags[account] = tag;
+        
+        emit IdentityRegistered(account, tier, block.timestamp);
+        emit IdentityTagSet(account, bytes32(0), tag);
     }
 }
