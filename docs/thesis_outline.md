@@ -83,8 +83,12 @@
 │  │ (政策編排引擎)   │  │(跨鏈合規驗證)   │  │ (外匯匯率提供者)    │ │
 │  └─────────────────┘  └─────────────────┘  └─────────────────────┘ │
 │  ┌─────────────────┐  ┌─────────────────┐  ┌─────────────────────┐ │
-│  │ WhitelistRule   │  │CashAdequacyRule │  │ CollateralRule      │ │
-│  │ (KYC/AML 白名單)│  │(現金充足性)     │  │ (抵押品驗證)        │ │
+│  │ CCIDRegistry    │  │ WhitelistRule   │  │ CashAdequacyRule    │ │
+│  │ (跨鏈身份註冊)  │  │ (KYC/AML 白名單)│  │ (現金充足性)        │ │
+│  └─────────────────┘  └─────────────────┘  └─────────────────────┘ │
+│  ┌─────────────────┐  ┌─────────────────┐  ┌─────────────────────┐ │
+│  │ CollateralRule  │  │ AMLThresholdRule│  │ FXLimitRule         │ │
+│  │ (抵押品驗證)    │  │ (大額交易申報)  │  │ (外匯額度限制)      │ │
 │  └─────────────────┘  └─────────────────┘  └─────────────────────┘ │
 ├────────────────────────────────────────────────────────────────────┤
 │                        Asset Layer                                 │
@@ -139,6 +143,16 @@
 - **FX 匯率提供者**：即時匯率查詢與轉換
 - **對應程式碼**：`ChainlinkACEIntegration.sol`, `FXRateProvider.sol`
 
+### 3.6 跨鏈身份管理設計 (CCIDRegistry)
+
+- **設計理念**：敏感資料存鏈下（符合 GDPR），可驗證性證明存鏈上
+- **核心功能**：
+  - 多層級 KYC 分級（TIER_NONE → TIER_BASIC → TIER_FULL → TIER_INSTITUTIONAL）
+  - 身份標籤管理（居民/非居民/法人/制裁名單）
+  - 跨鏈地址映射與同步
+  - 管轄區權限管理
+- **對應程式碼**：`CCIDRegistry.sol`
+
 ---
 
 ## 第四章 系統實作 (Implementation)
@@ -167,11 +181,13 @@
 
 #### 4.2.3 合規規則實作 (`contracts/rules/`)
 
-| 規則合約               | 功能                  | GL1 對應範例                    |
-| ---------------------- | --------------------- | ------------------------------- |
-| `WhitelistRule.sol`    | KYC/AML 白名單檢查    | Whitelisting Selected Receivers |
-| `CashAdequacyRule.sol` | 現金充足性驗證        | Cash Adequacy Check             |
-| `CollateralRule.sol`   | 抵押品價值與 LTV 驗證 | Collateral Sufficiency          |
+| 規則合約               | 功能                   | GL1 對應範例                    |
+| ---------------------- | ---------------------- | ------------------------------- |
+| `WhitelistRule.sol`    | KYC/AML 白名單檢查     | Whitelisting Selected Receivers |
+| `CashAdequacyRule.sol` | 現金充足性驗證         | Cash Adequacy Check             |
+| `CollateralRule.sol`   | 抵押品價值與 LTV 驗證  | Collateral Sufficiency          |
+| `AMLThresholdRule.sol` | 大額交易申報與拆分偵測 | Large Transaction Reporting     |
+| `FXLimitRule.sol`      | 非居民外匯額度限制     | Cross-Border Payment Limits     |
 
 #### 4.2.4 Policy Wrapper 實作 (`GL1PolicyWrapper.sol`)
 
@@ -185,6 +201,28 @@
 - 狀態機設計（INITIATED → FUNDED → EXECUTED → SETTLED/DEFAULTED）
 - 原子交換邏輯
 - 利息計算與結算金額
+
+#### 4.2.6 跨鏈身份註冊表實作 (`CCIDRegistry.sol`)
+
+- KYC 等級結構與驗證邏輯
+- 身份標籤（居民/非居民/法人/制裁）管理
+- 跨鏈地址映射（Ethereum ↔ Polygon ↔ BSC）
+- 管轄區權限審批機制
+- GDPR 合規：僅儲存身份雜湊，不儲存 PII
+
+#### 4.2.7 AML 大額交易規則實作 (`AMLThresholdRule.sol`)
+
+- 大額交易門檻檢測（預設 50,000）
+- 拆分交易偵測（時間窗口累計追蹤）
+- 自動申報記錄生成
+- AML 審查員工作流程（審查/標記/手動建立申報）
+
+#### 4.2.8 外匯額度規則實作 (`FXLimitRule.sol`)
+
+- 非居民每日外匯額度限制
+- 與 CCIDRegistry 整合判斷居民身份
+- 豁免地址管理（機構/交易所）
+- 額度變更歷史追溯
 
 ### 4.3 外部數據串接
 
@@ -316,17 +354,20 @@
 
 ### 附錄 A：專案結構與程式碼對照表
 
-| 合約檔案                      | 論文章節   | 功能說明                    |
-| ----------------------------- | ---------- | --------------------------- |
-| `PBMToken.sol`                | 3.1, 4.2.1 | ERC1155 Purpose Bound Money |
-| `GL1PolicyManager.sol`        | 3.2, 4.2.2 | 政策編排引擎                |
-| `GL1PolicyWrapper.sol`        | 3.3, 4.2.4 | 資產封裝與跨境支付          |
-| `RepoContract.sol`            | 3.4, 4.2.5 | Repo 交易管理               |
-| `WhitelistRule.sol`           | 4.2.3      | KYC/AML 白名單              |
-| `CashAdequacyRule.sol`        | 4.2.3      | 現金充足性驗證              |
-| `CollateralRule.sol`          | 4.2.3      | 抵押品驗證                  |
-| `ChainlinkACEIntegration.sol` | 3.5, 4.3.1 | 跨鏈合規驗證                |
-| `FXRateProvider.sol`          | 3.5, 4.3.2 | FX 匯率提供                 |
+| 合約檔案                      | 論文章節     | 功能說明                    |
+| ----------------------------- | ------------ | --------------------------- |
+| `PBMToken.sol`                | 3.1, 4.2.1   | ERC1155 Purpose Bound Money |
+| `GL1PolicyManager.sol`        | 3.2, 4.2.2   | 政策編排引擎                |
+| `GL1PolicyWrapper.sol`        | 3.3, 4.2.4   | 資產封裝與跨境支付          |
+| `RepoContract.sol`            | 3.4, 4.2.5   | Repo 交易管理               |
+| `CCIDRegistry.sol`            | 3.6, 4.2.6   | 跨鏈身份註冊表              |
+| `WhitelistRule.sol`           | 4.2.3        | KYC/AML 白名單              |
+| `CashAdequacyRule.sol`        | 4.2.3        | 現金充足性驗證              |
+| `CollateralRule.sol`          | 4.2.3        | 抵押品驗證                  |
+| `AMLThresholdRule.sol`        | 4.2.3, 4.2.7 | 大額交易申報與拆分偵測      |
+| `FXLimitRule.sol`             | 4.2.3, 4.2.8 | 非居民外匯額度限制          |
+| `ChainlinkACEIntegration.sol` | 3.5, 4.3.1   | 跨鏈合規驗證                |
+| `FXRateProvider.sol`          | 3.5, 4.3.2   | FX 匯率提供                 |
 
 ### 附錄 B：智能合約接口規格
 
