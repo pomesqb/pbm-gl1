@@ -9,6 +9,7 @@
 - 📜 **Repo 交易**：原子交換確保抵押品與現金安全交換
 - 🔗 **跨鏈整合**：Chainlink ACE 跨鏈合規驗證
 - 🆔 **身份管理**：CCID 跨鏈身份註冊與 KYC 驗證
+- 🧊 **ERC-7943 支援**：RWA 合規標準，支援資產凍結與強制轉帳
 
 ## 專案結構
 
@@ -22,7 +23,8 @@ contracts/
 │   ├── ICCIDProvider.sol             # 跨鏈身份提供者介面
 │   ├── IChainlinkACE.sol             # Chainlink ACE 整合介面
 │   ├── IChainlinkACEPolicyManager.sol # Chainlink ACE 政策管理介面
-│   └── IComplianceRule.sol           # 合規規則介面，所有規則須實作此介面
+│   ├── IComplianceRule.sol           # 合規規則介面，所有規則須實作此介面
+│   └── IERC7943MultiToken.sol        # ERC-7943 RWA 合規介面，定義凍結與強制轉帳
 │
 ├── core/
 │   ├── GL1PolicyWrapper.sol          # 核心包裝器，處理資產 wrap/unwrap 與 FX 轉換
@@ -39,7 +41,7 @@ contracts/
 │   └── AMLThresholdRule.sol          # AML 門檻規則，大額交易申報與風險評估
 │
 ├── token/
-│   └── PBMToken.sol                  # Purpose Bound Money 代幣 (ERC1155)
+│   └── PBMToken.sol                  # Purpose Bound Money 代幣 (ERC1155 + ERC7943)
 │
 ├── mocks/
 │   ├── MockERC20.sol                 # ERC20 Mock，用於測試
@@ -80,6 +82,18 @@ npx hardhat test
 | `CollateralRule`   | 抵押品價值與 LTV 驗證  | Collateral Sufficiency          |
 | `FXLimitRule`      | 外匯交易限額管控       | FX Control Limits               |
 | `AMLThresholdRule` | 大額交易申報與風險評估 | AML Large Transaction Reporting |
+
+## ERC-7943 RWA 合規標準
+
+`PBMToken` 實作 [ERC-7943](https://eips.ethereum.org/EIPS/eip-7943)（Universal Real World Asset Interface），提供監管級別的資產控制能力：
+
+| 功能            | 方法              | 說明                                             |
+| --------------- | ----------------- | ------------------------------------------------ |
+| 🧊 資產凍結     | `setFrozenTokens` | 凍結特定帳戶的代幣，防止未授權轉移               |
+| 🔄 強制轉帳     | `forcedTransfer`  | 監管機構可強制轉移代幣（用於合規執法或資產回收） |
+| ✅ 交易權限檢查 | `canTransact`     | 檢查帳戶是否已通過 KYC/AML 驗證                  |
+| 🔍 轉帳權限檢查 | `canTransfer`     | 預檢轉帳是否符合所有合規規則                     |
+| ❄️ 凍結餘額查詢 | `getFrozenTokens` | 查詢帳戶被凍結的代幣數量                         |
 
 ## 授權
 
