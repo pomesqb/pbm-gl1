@@ -1,0 +1,18 @@
+graph TB
+    subgraph OuterLayer["外層：PBM / ERC-1155 — 動態場景合規"]
+        FXL["FXLimitRule<br>外匯管制"]
+        AMLR["AMLThresholdRule<br>大額交易申報"]
+        WLR["WhitelistRule<br>白名單"]
+        COLR["CollateralRule<br>抵押品驗證"]
+        CASHR["CashAdequacyRule<br>現金充足性"]
+    end
+    subgraph Wrapper["GL1PolicyWrapper"]
+        W["wrap / unwrap<br>"]
+    end
+    subgraph InnerLayer["底層：ERC-3643 — 靜態基礎合規"]
+        KYC["KYC 身份驗證<br>IdentityRegistry"]
+        Freeze["帳戶凍結 / 強制轉移<br>Administrative Control"]
+        CM["靜態規則<br>ComplianceModule<br>"]
+    end
+    OuterLayer --> Wrapper
+    Wrapper --> InnerLayer
