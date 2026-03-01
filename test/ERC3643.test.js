@@ -394,6 +394,7 @@ describe("ERC-3643 Security Token", function () {
         JURISDICTION_TW,
         await policyManager.getAddress(),
         await pbmToken.getAddress(),
+        owner.address, // trustedSigner
       );
       await policyWrapper.waitForDeployment();
 

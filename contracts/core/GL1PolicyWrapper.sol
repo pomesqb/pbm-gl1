@@ -7,6 +7,8 @@ import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import "@openzeppelin/contracts/token/ERC721/IERC721.sol";
 import "@openzeppelin/contracts/token/ERC1155/IERC1155.sol";
 import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+import "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
+import "@openzeppelin/contracts/utils/cryptography/MessageHashUtils.sol";
 import "../interfaces/IGL1PolicyWrapper.sol";
 import "../interfaces/IPolicyManager.sol";
 import "../interfaces/IFXRateProvider.sol";
@@ -27,12 +29,17 @@ import "../token/PBMToken.sol";
  */
 contract GL1PolicyWrapper is IGL1PolicyWrapper, AccessControl, ReentrancyGuard {
     using SafeERC20 for IERC20;
+    using ECDSA for bytes32;
+    using MessageHashUtils for bytes32;
     
     bytes32 public constant REGULATOR_ROLE = keccak256("REGULATOR_ROLE");
     bytes32 public constant POLICY_ADMIN_ROLE = keccak256("POLICY_ADMIN_ROLE");
     
     // 司法管轄區代碼 (ISO 3166-1)
     bytes32 public immutable jurisdictionCode;
+    
+    // 授權簽署者地址（受信任機構）
+    address public trustedSigner;
     
     // PBM Token (ERC1155)
     PBMToken public pbmToken;
@@ -101,6 +108,7 @@ contract GL1PolicyWrapper is IGL1PolicyWrapper, AccessControl, ReentrancyGuard {
     
     event PolicyManagerUpdated(address indexed oldManager, address indexed newManager);
     event ComplianceExemptionSet(address indexed account, bool exempt);
+    event TrustedSignerUpdated(address indexed oldSigner, address indexed newSigner);
     
     // FX 相關事件
     event FXRateProviderUpdated(address indexed oldProvider, address indexed newProvider);
@@ -130,11 +138,13 @@ contract GL1PolicyWrapper is IGL1PolicyWrapper, AccessControl, ReentrancyGuard {
     constructor(
         bytes32 _jurisdictionCode,
         address _policyManager,
-        address _pbmToken
+        address _pbmToken,
+        address _trustedSigner
     ) {
         jurisdictionCode = _jurisdictionCode;
         policyManager = IPolicyManager(_policyManager);
         pbmToken = PBMToken(_pbmToken);
+        trustedSigner = _trustedSigner;
         
         _grantRole(DEFAULT_ADMIN_ROLE, msg.sender);
         _grantRole(POLICY_ADMIN_ROLE, msg.sender);
@@ -334,11 +344,38 @@ contract GL1PolicyWrapper is IGL1PolicyWrapper, AccessControl, ReentrancyGuard {
     }
     
     /**
-     * @notice 驗證 ProofSet
+     * @notice 驗證 ProofSet — 時效性 + ECDSA 簽章驗證
+     * @dev 1. 檢查時效性（issuedAt ≤ now < expiresAt）
+     *      2. 將 ProofSet 核心欄位編碼並雜湊
+     *      3. 加上 Ethereum Signed Message prefix
+     *      4. 透過 ECDSA.recover 從簽章還原簽署者地址
+     *      5. 比對是否為系統授權的 trustedSigner
      */
     function _verifyProofSet(ProofSet calldata proof) internal view {
+        // 時效性檢查
         require(proof.expiresAt > block.timestamp, "Proof expired");
         require(proof.issuedAt <= block.timestamp, "Proof not yet valid");
+        
+        // ECDSA 簽章驗證
+        require(trustedSigner != address(0), "Trusted signer not set");
+        
+        // 將 ProofSet 核心欄位編碼並計算訊息雜湊
+        bytes32 messageHash = keccak256(abi.encode(
+            proof.proofType,
+            proof.credentialHash,
+            proof.issuedAt,
+            proof.expiresAt,
+            proof.issuer
+        ));
+        
+        // 加上 Ethereum Signed Message prefix（EIP-191）
+        bytes32 ethSignedHash = messageHash.toEthSignedMessageHash();
+        
+        // 從簽章還原簽署者地址
+        address recoveredSigner = ethSignedHash.recover(proof.signature);
+        
+        // 比對是否為授權簽署者
+        require(recoveredSigner == trustedSigner, "Invalid proof signer");
     }
     
     /**
@@ -400,6 +437,17 @@ contract GL1PolicyWrapper is IGL1PolicyWrapper, AccessControl, ReentrancyGuard {
     
     function setComplianceEnabled(bool enabled) external onlyRole(POLICY_ADMIN_ROLE) {
         complianceEnabled = enabled;
+    }
+    
+    /**
+     * @notice 更新授權簽署者
+     * @param newSigner 新簽署者地址
+     */
+    function setTrustedSigner(address newSigner) external onlyRole(POLICY_ADMIN_ROLE) {
+        require(newSigner != address(0), "Invalid signer address");
+        address oldSigner = trustedSigner;
+        trustedSigner = newSigner;
+        emit TrustedSignerUpdated(oldSigner, newSigner);
     }
     
     // ============ View Functions ============

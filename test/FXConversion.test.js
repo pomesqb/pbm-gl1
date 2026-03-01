@@ -56,7 +56,7 @@ describe("FX Conversion for Cross-Border Payments", function () {
     const policyManagerContract = await GL1PolicyManager.deploy(
       owner.address,
       await ccidRegistry.getAddress(),
-      owner.address
+      owner.address,
     );
     await policyManagerContract.waitForDeployment();
 
@@ -71,7 +71,8 @@ describe("FX Conversion for Cross-Border Payments", function () {
     policyWrapper = await GL1PolicyWrapper.deploy(
       JURISDICTION_SG,
       await policyManagerContract.getAddress(),
-      await pbmToken.getAddress()
+      await pbmToken.getAddress(),
+      owner.address, // trustedSigner
     );
     await policyWrapper.waitForDeployment();
 
@@ -97,7 +98,7 @@ describe("FX Conversion for Cross-Border Payments", function () {
     await mockCNY.mint(tourist.address, ethers.parseEther("10000")); // 1萬 CNY
     await mockSGD.mint(
       await policyWrapper.getAddress(),
-      ethers.parseEther("10000")
+      ethers.parseEther("10000"),
     ); // 為合約提供 SGD 流動性
   });
 
@@ -117,7 +118,7 @@ describe("FX Conversion for Cross-Border Payments", function () {
       const [convertedAmount, rateUsed] = await mockFXProvider.convert(
         TWD,
         SGD,
-        amount
+        amount,
       );
 
       // 1000 TWD ≈ 42.2 SGD (基於 Mock 匯率)
@@ -149,7 +150,7 @@ describe("FX Conversion for Cross-Border Payments", function () {
         await mockTWD.getAddress(),
         twdAmount,
         SGD, // 目標幣種：SGD
-        emptyProof
+        emptyProof,
       );
 
       // 檢查事件
@@ -160,10 +161,10 @@ describe("FX Conversion for Cross-Border Payments", function () {
       const pbmTokenId = await policyWrapper.computePBMTokenId(
         0, // ERC20
         await mockTWD.getAddress(),
-        0
+        0,
       );
       expect(await pbmToken.balanceOf(tourist.address, pbmTokenId)).to.equal(
-        twdAmount
+        twdAmount,
       );
     });
 
@@ -185,14 +186,14 @@ describe("FX Conversion for Cross-Border Payments", function () {
           await mockCNY.getAddress(),
           cnyAmount,
           SGD,
-          emptyProof
+          emptyProof,
         );
 
       const receipt = await tx.wait();
 
       // 找到 FXConversionApplied 事件
       const fxEvent = receipt.logs.find(
-        (log) => log.fragment && log.fragment.name === "FXConversionApplied"
+        (log) => log.fragment && log.fragment.name === "FXConversionApplied",
       );
 
       if (fxEvent) {
@@ -216,8 +217,8 @@ describe("FX Conversion for Cross-Border Payments", function () {
             await mockTWD.getAddress(),
             twdAmount,
             SGD,
-            emptyProof
-          )
+            emptyProof,
+          ),
       ).to.be.revertedWith("FX conversion not enabled");
     });
   });
@@ -229,7 +230,7 @@ describe("FX Conversion for Cross-Border Payments", function () {
       const [convertedAmount, rate] = await policyWrapper.previewFXConversion(
         await mockTWD.getAddress(),
         amount,
-        SGD
+        SGD,
       );
 
       expect(convertedAmount).to.be.gt(0);
@@ -269,18 +270,18 @@ describe("FX Conversion for Cross-Border Payments", function () {
           await mockTWD.getAddress(),
           twdAmount,
           SGD,
-          emptyProof
+          emptyProof,
         );
 
       const pbmTokenId = await policyWrapper.computePBMTokenId(
         0, // ERC20
         await mockTWD.getAddress(),
-        0
+        0,
       );
 
       // 3. 驗證遊客獲得 PBM
       expect(await pbmToken.balanceOf(tourist.address, pbmTokenId)).to.equal(
-        twdAmount
+        twdAmount,
       );
 
       // 4. 遊客將 PBM 轉給商家
@@ -291,12 +292,12 @@ describe("FX Conversion for Cross-Border Payments", function () {
           merchant.address,
           pbmTokenId,
           twdAmount,
-          "0x"
+          "0x",
         );
 
       // 5. 驗證商家收到 PBM
       expect(await pbmToken.balanceOf(merchant.address, pbmTokenId)).to.equal(
-        twdAmount
+        twdAmount,
       );
       expect(await pbmToken.balanceOf(tourist.address, pbmTokenId)).to.equal(0);
 
@@ -309,7 +310,7 @@ describe("FX Conversion for Cross-Border Payments", function () {
           pbmTokenId,
           twdAmount,
           await mockSGD.getAddress(),
-          merchant.address
+          merchant.address,
         );
 
       const merchantSgdAfter = await mockSGD.balanceOf(merchant.address);
@@ -319,7 +320,7 @@ describe("FX Conversion for Cross-Border Payments", function () {
 
       // 8. 驗證 PBM 已銷毀
       expect(await pbmToken.balanceOf(merchant.address, pbmTokenId)).to.equal(
-        0
+        0,
       );
     });
   });
@@ -342,7 +343,7 @@ describe("FX Conversion for Cross-Border Payments", function () {
       const [expectedTWD] = await mockFXProvider.convert(
         SGD,
         TWD,
-        merchantPrice
+        merchantPrice,
       );
 
       // 遊客需要 approve 足夠的 TWD
@@ -359,7 +360,7 @@ describe("FX Conversion for Cross-Border Payments", function () {
         SGD, // 商家幣種
         await mockTWD.getAddress(), // 遊客支付 TWD
         merchant.address, // 商家地址
-        emptyProof
+        emptyProof,
       );
 
       // 檢查事件
@@ -374,10 +375,10 @@ describe("FX Conversion for Cross-Border Payments", function () {
       const pbmTokenId = await policyWrapper.computePBMTokenId(
         0, // ERC20
         await mockTWD.getAddress(),
-        0
+        0,
       );
       expect(await pbmToken.balanceOf(merchant.address, pbmTokenId)).to.equal(
-        expectedTWD
+        expectedTWD,
       );
     });
 
@@ -387,7 +388,7 @@ describe("FX Conversion for Cross-Border Payments", function () {
       const [expectedTWD, rateUsed] = await mockFXProvider.convert(
         SGD,
         TWD,
-        merchantPrice
+        merchantPrice,
       );
 
       await mockTWD
@@ -401,14 +402,14 @@ describe("FX Conversion for Cross-Border Payments", function () {
           SGD,
           await mockTWD.getAddress(),
           merchant.address,
-          emptyProof
+          emptyProof,
         );
 
       // 查詢 FX 交易記錄
       const pbmTokenId = await policyWrapper.computePBMTokenId(
         0,
         await mockTWD.getAddress(),
-        0
+        0,
       );
 
       const fxTx = await policyWrapper.getFXTransaction(pbmTokenId);
@@ -432,7 +433,7 @@ describe("FX Conversion for Cross-Border Payments", function () {
         .connect(tourist)
         .approve(
           await policyWrapper.getAddress(),
-          ethers.parseEther("100000000")
+          ethers.parseEther("100000000"),
         );
 
       await expect(
@@ -443,8 +444,8 @@ describe("FX Conversion for Cross-Border Payments", function () {
             SGD,
             await mockTWD.getAddress(),
             merchant.address,
-            emptyProof
-          )
+            emptyProof,
+          ),
       ).to.be.revertedWith("Insufficient balance");
     });
 
@@ -456,7 +457,7 @@ describe("FX Conversion for Cross-Border Payments", function () {
       const [twdToPayFromContract] = await mockFXProvider.convert(
         SGD,
         TWD,
-        merchantPrice
+        merchantPrice,
       );
 
       // 3. 遊客 approve TWD
@@ -472,18 +473,18 @@ describe("FX Conversion for Cross-Border Payments", function () {
           SGD,
           await mockTWD.getAddress(),
           merchant.address,
-          emptyProof
+          emptyProof,
         );
 
       const pbmTokenId = await policyWrapper.computePBMTokenId(
         0,
         await mockTWD.getAddress(),
-        0
+        0,
       );
 
       // 5. 驗證商家已收到 PBM
       expect(await pbmToken.balanceOf(merchant.address, pbmTokenId)).to.equal(
-        twdToPayFromContract
+        twdToPayFromContract,
       );
 
       // 6. 查詢 FX 記錄
@@ -500,7 +501,7 @@ describe("FX Conversion for Cross-Border Payments", function () {
           pbmTokenId,
           twdToPayFromContract,
           await mockSGD.getAddress(),
-          merchant.address
+          merchant.address,
         );
 
       const merchantSgdAfter = await mockSGD.balanceOf(merchant.address);
@@ -510,7 +511,7 @@ describe("FX Conversion for Cross-Border Payments", function () {
 
       // 9. PBM 已銷毀
       expect(await pbmToken.balanceOf(merchant.address, pbmTokenId)).to.equal(
-        0
+        0,
       );
     });
   });

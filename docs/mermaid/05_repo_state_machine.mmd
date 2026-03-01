@@ -1,0 +1,13 @@
+stateDiagram-v2
+    [*] --> INITIATED: initiateRepo()
+    INITIATED --> BORROWER_FUNDED: fundAsBorrower()
+    INITIATED --> LENDER_FUNDED: fundAsLender()
+    BORROWER_FUNDED --> FUNDED: fundAsLender()
+    LENDER_FUNDED --> FUNDED: fundAsBorrower()
+    FUNDED --> EXECUTED: executeRepo()
+    EXECUTED --> SETTLED: settleRepo()
+    EXECUTED --> DEFAULTED: claimCollateral()
+
+    INITIATED --> CANCELLED: cancelRepo()
+    BORROWER_FUNDED --> CANCELLED: cancelRepo()
+    LENDER_FUNDED --> CANCELLED: cancelRepo()

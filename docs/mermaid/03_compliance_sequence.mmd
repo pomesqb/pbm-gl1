@@ -1,0 +1,41 @@
+sequenceDiagram
+    participant User as 使用者
+    participant PBM as PBMToken
+    participant PW as GL1PolicyWrapper
+    participant PM as GL1PolicyManager
+    participant CCID as CCIDRegistry
+    participant Rule as 合規規則
+    participant ERC as ERC3643Token
+    participant IR as IdentityRegistry
+
+    User->>PBM: safeTransferFrom()
+    PBM->>PBM: _update() 凍結餘額檢查
+    PBM->>PW: checkTransferCompliance()
+
+    rect rgb(230, 245, 255)
+        Note over PW,Rule: 外層 PBM 合規
+        PW->>PM: verifyIdentity()
+        PM->>CCID: 確認 KYC 狀態與管轄區
+        CCID-->>PM: 通過
+        PW->>PM: executeComplianceRules()
+        PM->>Rule: 逐一執行規則
+        Rule-->>PM: 全部通過
+        PM-->>PW: 合規通過
+    end
+
+    PW-->>PBM: 允許轉移
+    PBM->>PBM: 執行 ERC-1155 轉移
+
+    opt 涉及 unwrap 解封裝
+        rect rgb(255, 240, 230)
+            Note over PW,IR: 底層 ERC-3643 合規
+            PW->>ERC: transfer()
+            ERC->>ERC: 未暫停 / 未凍結 / 餘額充足
+            ERC->>IR: isVerified()
+            IR->>CCID: getKYCTier() + isCredentialExpired()
+            CCID-->>IR: 通過
+            IR-->>ERC: 通過
+            ERC->>ERC: ComplianceModule.canTransfer()
+            ERC-->>PW: 底層資產轉移完成
+        end
+    end

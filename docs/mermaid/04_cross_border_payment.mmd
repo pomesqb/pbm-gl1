@@ -1,0 +1,23 @@
+sequenceDiagram
+    participant Tourist as 遊客 TWD
+    participant PW as GL1PolicyWrapper
+    participant FXP as FXRateProvider
+    participant PM as GL1PolicyManager
+    participant WL as WhitelistRule
+    participant FXL as FXLimitRule
+    participant Merchant as 商家 SGD
+
+    Tourist->>PW: payWithFXConversion(TWD, 3200, SGD)
+    PW->>FXP: getRate(TWD, SGD)
+    FXP-->>PW: 匯率 + convert = 100 SGD
+
+    rect rgb(230, 245, 255)
+        Note over PW,FXL: 合規檢查
+        PW->>PM: executeComplianceRules()
+        PM->>WL: 商家白名單驗證
+        PM->>FXL: 非居民外匯額度檢查
+    end
+
+    PW->>PW: 扣款 3200 TWD, 鑄造 PBM
+    Merchant->>PW: settleCrossBorderPayment()
+    PW-->>Merchant: 收取 100 SGD 結算

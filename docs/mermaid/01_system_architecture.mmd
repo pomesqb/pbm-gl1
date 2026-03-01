@@ -1,0 +1,43 @@
+graph TB
+    subgraph OffChain["鏈下 Off-chain"]
+        TI["受信任機構<br/>KYC/AML 服務商"]
+    end
+
+    DApp["DApp / 前端介面"]
+
+    subgraph PolicyOrchestration["政策編排"]
+        PM["GL1PolicyManager<br/>PCT: 政策管理器"]
+    end
+
+    subgraph Identity["身份管理"]
+        CCID["CCIDRegistry<br/>PCT: 身份管理<br/>參照 Chainlink ACE CCID"]
+        IR["IdentityRegistry"]
+    end
+
+    subgraph RuleEngine["PCT: 合規規則引擎"]
+        WR["WhitelistRule"]
+        AML["AMLThresholdRule"]
+        FX["FXLimitRule"]
+        CLR["CollateralRule"]
+        CR["CashAdequacyRule"]
+    end
+
+    subgraph DualLayer["雙層合規架構"]
+        PW["GL1PolicyWrapper<br/>PCT: 政策封裝器 + 行政控制"]
+        subgraph OuterPBM["外層：動態場景合規"]
+            PBM["PBMToken ERC-1155<br/>整合 ERC-7943 uRWA 介面"]
+        end
+        subgraph InnerERC["內層：靜態基礎合規"]
+            ERC["ERC3643Token 許可制代幣"]
+        end
+        PW --> OuterPBM
+        OuterPBM -->|"wrap / unwrap<br/>lock-and-mint"| InnerERC
+    end
+
+    TI -->|"簽發合規證明<br/>ProofSet"| PM
+    DApp --> PW
+    PW --> PM
+    PM --> CCID
+    PM --> RuleEngine
+    IR --> CCID
+    ERC --> IR
