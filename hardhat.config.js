@@ -1,4 +1,5 @@
 require("@nomicfoundation/hardhat-toolbox");
+require("hardhat-gas-reporter");
 
 /** @type import('hardhat/config').HardhatUserConfig */
 module.exports = {
@@ -10,6 +11,7 @@ module.exports = {
         enabled: true,
         runs: 200,
       },
+      evmVersion: "paris",
     },
   },
   networks: {
@@ -27,5 +29,14 @@ module.exports = {
   },
   etherscan: {
     apiKey: process.env.ETHERSCAN_API_KEY || "",
+  },
+  gasReporter: {
+    enabled: process.env.REPORT_GAS !== undefined ? true : true,
+    currency: "USD",
+    gasPrice: 30,
+    outputFile: "gas-report.txt",
+    noColors: true,
+    showMethodSig: true,
+    showTimeSpent: true,
   },
 };

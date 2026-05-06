@@ -1,0 +1,5 @@
+level,description,mean_gas,median_gas,min_gas,max_gas,vs_L0_pct,vs_prev_pct
+L0,"純 ERC-20 transfer (baseline)",34137,34137,34137,34137,0.00,
+L1,"ERC-3643 transfer (paused / frozen / unfrozen / identity / compliance)",93027,93027,93027,93027,172.51,172.51
+L2,"PBM safeTransferFrom (外層動態合規 + 底層靜態合規, rules=1 [WHITELIST])",217209,217209,217209,217209,536.29,133.49
+L3,"PBM safeTransferFrom (rules=5: WHITELIST, AML, FX, COLLATERAL, CASH)",356280,356280,356280,356280,943.68,64.03
