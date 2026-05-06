@@ -1,5 +1,6 @@
-level,description,mean_gas,median_gas,min_gas,max_gas,vs_L0_pct,vs_prev_pct
-L0,"純 ERC-20 transfer (baseline)",34137,34137,34137,34137,0.00,
-L1,"ERC-3643 transfer (paused / frozen / unfrozen / identity / compliance)",93027,93027,93027,93027,172.51,172.51
-L2,"PBM safeTransferFrom (外層動態合規 + 底層靜態合規, rules=1 [WHITELIST])",217209,217209,217209,217209,536.29,133.49
-L3,"PBM safeTransferFrom (rules=5: WHITELIST, AML, FX, COLLATERAL, CASH)",356280,356280,356280,356280,943.68,64.03
+level,description,gas,eth_at_5gwei,usd_at_2355usd_per_eth,vs_L0_pct,vs_prev_pct
+L0,"ERC-20 transfer() — 無合規基線",34137,0.0001707,0.4020,0.00,
+L1,"ERC-3643 transfer() — 底層靜態合規（暫停/凍結/未凍結餘額/身份驗證/合規模組）",93027,0.0004651,1.0954,172.51,172.51
+L2,"PBM safeTransferFrom() — 外層動態合規 (rules=1, WHITELIST)",217209,0.0010860,2.5576,536.29,133.49
+L3,"PBM safeTransferFrom() — 外層動態合規 (rules=5, 同質: 5×WhitelistRule)",353243,0.0017662,4.1594,934.78,62.63
+L4,"PBM safeTransferFrom() — 外層動態合規 (rules=100, 同質: 100×WhitelistRule)",3592008,0.0179600,42.2959,10422.33,916.87
