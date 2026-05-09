@@ -1,0 +1,8 @@
+case,description,n,median_ms,p25_ms,p75_ms,min_ms,max_ms,mean_ms,vs_m0_pct
+M0,"ERC-20 transfer — 無合規基線",100,2.09,1.78,2.66,1.47,6.44,2.34,0.00
+M1,"ERC-3643 transfer — 底層靜態合規（凍結/暫停/身份/合規模組）",100,2.72,2.45,3.59,1.95,20.05,3.39,30.42
+M2,"PBM safeTransferFrom — 純鏈上 (rules=1, WhitelistRule)",100,4.02,3.63,4.91,2.83,16.50,4.65,92.20
+M3,"PBM safeTransferFrom — 純鏈上 (rules=5)",100,6.67,5.60,7.79,4.64,30.39,7.57,219.24
+M4,"PBM safeTransferFrom — 純鏈上 (rules=100)",100,64.96,53.73,93.26,39.83,438.66,82.89,3009.15
+M5,"safeTransferFromWithProof — 鏈下檢驗 (AML 名單=1,000)",100,9.00,7.31,10.76,5.73,30.83,9.54,330.92
+M6,"safeTransferFromWithProof — 鏈下檢驗 (AML 名單=1,000,000)",100,22.20,20.17,25.52,15.94,61.38,23.31,962.65

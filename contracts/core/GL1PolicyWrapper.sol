@@ -260,6 +260,36 @@ contract GL1PolicyWrapper is IGL1PolicyWrapper, AccessControl, ReentrancyGuard {
     }
     
     /**
+     * @notice ProofSet 驗章後轉帳（鏈下檢驗路徑）
+     * @dev 對應論文 §2-8 鏈下檢驗機制：使用者攜帶 ProofSet 上鏈，
+     *      合約僅執行簽章與時效驗證後直接放行，不跑鏈上規則鏈。
+     *      與標準 PBMToken.safeTransferFrom（鏈上規則鏈路徑）為平行替代路徑，
+     *      使兩條合規架構可在 transfer 層級同台對比延遲。
+     * @param from 發送方
+     * @param to 接收方
+     * @param tokenId PBM tokenId
+     * @param amount 數量
+     * @param proof 鏈下合規閘道簽發的 ProofSet
+     */
+    function safeTransferFromWithProof(
+        address from,
+        address to,
+        uint256 tokenId,
+        uint256 amount,
+        ProofSet calldata proof
+    ) external nonReentrant {
+        require(from != address(0), "Invalid from");
+        require(to != address(0), "Invalid to");
+        require(amount > 0, "Amount must be > 0");
+
+        if (complianceEnabled && !complianceExempt[msg.sender]) {
+            _verifyProofSet(proof);
+        }
+
+        pbmToken.transferWithProofBypass(from, to, tokenId, amount);
+    }
+
+    /**
      * @notice 解包取回底層資產
      */
     function unwrap(

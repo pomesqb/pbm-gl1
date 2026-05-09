@@ -28,7 +28,10 @@ contract PBMToken is ERC1155, AccessControl, IERC7943MultiToken {
     
     // 凍結代幣追蹤：account → tokenId → frozen amount
     mapping(address => mapping(uint256 => uint256)) private _frozenTokens;
-    
+
+    // ProofSet 驗章後跳過鏈上規則鏈的暫存旗標（僅單筆 tx 內有效）
+    bool private _bypassCompliance;
+
     event TokenMinted(address indexed to, uint256 indexed tokenId, uint256 amount);
     event TokenBurned(address indexed from, uint256 indexed tokenId, uint256 amount);
     event WrapperUpdated(address indexed oldWrapper, address indexed newWrapper);
@@ -207,6 +210,27 @@ contract PBMToken is ERC1155, AccessControl, IERC7943MultiToken {
     }
     
     /**
+     * @notice ProofSet 驗章後直接轉帳（鏈下檢驗路徑用）
+     * @dev 僅 WRAPPER_ROLE 可呼叫；wrapper 在 _verifyProofSet 通過後呼叫此函式
+     *      跳過 _update 內的 wrapper.checkTransferCompliance（規則鏈），
+     *      但保留凍結餘額檢查。設計目的：讓鏈下檢驗路徑與鏈上規則鏈路徑
+     *      在 transfer 層級可同台對比延遲。
+     */
+    function transferWithProofBypass(
+        address from,
+        address to,
+        uint256 tokenId,
+        uint256 amount
+    ) external onlyRole(WRAPPER_ROLE) {
+        require(from != address(0), "from zero");
+        require(to != address(0), "to zero");
+
+        _bypassCompliance = true;
+        _safeTransferFrom(from, to, tokenId, amount, "");
+        _bypassCompliance = false;
+    }
+
+    /**
      * @notice 強制轉移代幣
      * @dev 僅限 REGULATOR_ROLE 調用，用於監管合規或資產回收
      *      如果代幣被凍結，會先自動解凍
@@ -290,24 +314,27 @@ contract PBMToken is ERC1155, AccessControl, IERC7943MultiToken {
                 }
             }
             
-            // 調用 wrapper 進行合規檢查
-            // 注意：這裡不能直接 import PolicyWrapper 避免循環依賴
-            // 使用低階調用
-            for (uint256 i = 0; i < ids.length; i++) {
-                (bool success, bytes memory result) = wrapper.call(
-                    abi.encodeWithSignature(
-                        "checkTransferCompliance(address,address,uint256,uint256)",
-                        from, to, ids[i], values[i]
-                    )
-                );
-                
-                if (success && result.length >= 32) {
-                    (bool isCompliant,) = abi.decode(result, (bool, string));
-                    if (!isCompliant) {
-                        revert ERC7943CannotTransfer(from, to, ids[i], values[i]);
+            // 鏈上規則鏈檢查；若 wrapper 已透過 ProofSet 驗章，則跳過此區
+            if (!_bypassCompliance) {
+                // 調用 wrapper 進行合規檢查
+                // 注意：這裡不能直接 import PolicyWrapper 避免循環依賴
+                // 使用低階調用
+                for (uint256 i = 0; i < ids.length; i++) {
+                    (bool success, bytes memory result) = wrapper.call(
+                        abi.encodeWithSignature(
+                            "checkTransferCompliance(address,address,uint256,uint256)",
+                            from, to, ids[i], values[i]
+                        )
+                    );
+
+                    if (success && result.length >= 32) {
+                        (bool isCompliant,) = abi.decode(result, (bool, string));
+                        if (!isCompliant) {
+                            revert ERC7943CannotTransfer(from, to, ids[i], values[i]);
+                        }
                     }
+                    // 如果 wrapper 調用失敗，允許轉移（可配置為嚴格模式）
                 }
-                // 如果 wrapper 調用失敗，允許轉移（可配置為嚴格模式）
             }
         }
         
