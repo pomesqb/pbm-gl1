@@ -185,8 +185,6 @@ async function main() {
   // STEP 1：部署所有合約
   // ════════════════════════════════════════════════════════════
   banner(1, "部署系統合約");
-  info("每個合約的部署本身也是一筆鏈上交易，下面同時印出合約地址與部署交易雜湊");
-  console.log("");
 
   const ccid = await deployAndShow("CCIDRegistry", "CCIDRegistry");
   const ace = await deployAndShow("MockChainlinkACE", "MockChainlinkACE");
@@ -208,16 +206,12 @@ async function main() {
       deployer.address,
     ],
   );
-  // 把 wrapper 地址回填到 pbm（這不是部署，是設定 tx）
+  console.log("");
   const updWrapReceipt = await (
     await pbm.updateWrapper(await wrapper.getAddress())
   ).wait();
-  console.log(
-    `  ${c.dim}·${c.reset} pbm.updateWrapper() — 把 wrapper 地址回填給 PBMToken`,
-  );
-  console.log(
-    `  ${c.blue}┃${c.reset} ${c.gray}tx=${updWrapReceipt.hash.slice(0, 18)}…  block=${updWrapReceipt.blockNumber}${c.reset}`,
-  );
+  txEvidence(updWrapReceipt, `pbm.updateWrapper(wrapper=${shortAddr(await wrapper.getAddress())})`);
+  console.log("");
 
   const whitelist = await deployAndShow("WhitelistRule", "WhitelistRule");
   const fxLimit = await deployAndShow("FXLimitRule", "FXLimitRule", [
@@ -246,26 +240,6 @@ async function main() {
   // ════════════════════════════════════════════════════════════
   banner(2, "CCID 身份註冊（KYC/AML 上鏈）");
 
-  info("【鏈下流程】受信任機構（如銀行合規部門、KYC/AML 服務供應商）先在鏈下");
-  info("審核護照、身分證、法人盡職調查等實體文件，並跑制裁名單比對。");
-  info("通過後把整份文件雜湊成 identityHash（一個 32-byte 值，不含任何 PII）。");
-  console.log("");
-  info("【鏈上動作】機構用持有 KYC_PROVIDER_ROLE 的地址呼叫 CCIDRegistry，");
-  info("把 identityHash + 等級 (tier) + 標籤 (tag) 寫上鏈。鏈上看不到任何 PII，");
-  info("但審計時可用 hash 反查鏈下文件是否未被竄改 — 符合 GDPR 數據最小化原則。");
-  console.log("");
-  info("【三個函式分工】");
-  info("  · registerIdentity(address account, bytes32 identityHash, bytes32 tier)");
-  info("      → 在 identities 名冊新增一筆帳戶");
-  info("  · approveJurisdiction(address account, bytes32 jurisdiction)");
-  info("      → 授權該帳戶可在某管轄區交易（寫入授權清單）");
-  info("  · verifyCredential(address account, bytes32 jurisdiction) returns (bool)");
-  info("      → view 函式，一次回答「名冊有 + 沒過期 + 授權清單有」");
-  console.log("");
-  info("本 demo 為求簡化，deployer 同時扮演「受信任 KYC 機構」這個角色，");
-  info("實務上應由具備鏈下 KYC 能力的合規機構持有 KYC_PROVIDER_ROLE。");
-  console.log("");
-
   const idHash = (n) => ethers.keccak256(ethers.toUtf8Bytes("identity_" + n));
 
   // 4 個身份的清單，後面三輪呼叫都用同一個 loop 跑
@@ -292,7 +266,7 @@ async function main() {
     },
   ];
 
-  highlight("監管機關呼叫 CCIDRegistry.registerIdentity()  ×4 — 把 4 個帳戶的 KYC 雜湊上鏈");
+  highlight("鏈下受信任機構KYC之後，呼叫 CCIDRegistry.registerIdentity(account,identityHash,tier)，把KYC雜湊上鏈，在identities新增一筆帳戶");
   for (const id of identities) {
     const r = await (
       await ccid.registerIdentity(id.signer.address, idHash(id.name), id.tier)
@@ -307,7 +281,7 @@ async function main() {
   }
 
   console.log("");
-  highlight("監管機關呼叫 CCIDRegistry.approveJurisdiction()  ×4 — 核准 4 個帳戶在 SG 管轄區操作");
+  highlight("鏈下受信任機構呼叫 CCIDRegistry.approveJurisdiction(account,jurisdiction)，核准帳戶在SG管轄區操作");
   for (const id of identities) {
     const r = await (
       await ccid.approveJurisdiction(id.signer.address, JURISDICTION_SG)
@@ -319,7 +293,7 @@ async function main() {
   }
 
   console.log("");
-  highlight("監管機關呼叫 CCIDRegistry.setIdentityTag()  ×4 — 標註居民/非居民身份（影響 FX 規則）");
+  highlight("鏈下受信任機構呼叫 CCIDRegistry.setIdentityTag(account, tag)，標註居民/非居民身份（影響 FX 規則）");
   for (const id of identities) {
     const r = await (
       await ccid.setIdentityTag(id.signer.address, id.tag)
@@ -331,7 +305,7 @@ async function main() {
   }
 
   console.log("");
-  info("驗證：呼叫 verifyCredential(address account, bytes32 jurisdiction)");
+  highlight("驗證者：呼叫 verifyCredential(address account, bytes32 jurisdiction)，檢查名冊有 + 沒過期 + 授權清單有");
   info("（view function，不花 gas、不留 tx 紀錄）");
   for (const id of identities) {
     const v = await ccid.verifyCredential.staticCall(
@@ -346,46 +320,60 @@ async function main() {
   // ════════════════════════════════════════════════════════════
   // STEP 3：合規規則鏈設定
   // ════════════════════════════════════════════════════════════
-  banner(3, "合規規則鏈設定（Whitelist + FXLimit）");
+  banner(3, "合規規則設定（Whitelist + FXLimit）");
 
-  highlight("把商家 C 加入白名單");
+  highlight("監管機關呼叫 WhitelistRule.addToWhitelist(account, name, category)，把商家 C 加入白名單");
   const r3a = await (
     await whitelist.addToWhitelist(merchant.address, "Singapore Coffee", "F&B")
   ).wait();
-  txEvidence(r3a, "WhitelistRule.addToWhitelist()");
+  txEvidence(r3a, `WhitelistRule.addToWhitelist(merchant, "Singapore Coffee", "F&B")`);
   showEvent(r3a, whitelist, "AddedToWhitelist", (a) =>
     `account=${shortAddr(a[0])}, name="${a[1]}", category="${a[2]}"`,
   );
 
-  highlight("設定外匯每日上限 = 1,000 TWD");
+  console.log("");
+  highlight("監管機關呼叫 FXLimitRule.setDailyLimit(amount)，設定外匯每日上限 = 1,000 TWD");
   const r3b = await (await fxLimit.setDailyLimit(ethers.parseEther("1000"))).wait();
-  txEvidence(r3b, "FXLimitRule.setDailyLimit()");
+  txEvidence(r3b, "FXLimitRule.setDailyLimit(1000e18)");
   showEvent(r3b, fxLimit, "DailyLimitUpdated", (a) =>
     `oldLimit=${fmt(a[0], 0)}, newLimit=${fmt(a[1], 0)} TWD`,
   );
 
-  highlight("把兩條規則註冊到 PolicyManager，並綁到 SG 管轄區");
+  console.log("");
   const RULE_WL = ethers.keccak256(ethers.toUtf8Bytes("RULE_WHITELIST"));
   const RULE_FX = ethers.keccak256(ethers.toUtf8Bytes("RULE_FX"));
-  await policyManager.registerRuleSet(
+  highlight("監管機關呼叫 PolicyManager.registerRuleSet(ruleId, name, enabled, ruleAddress, priority) ×2，把兩條規則註冊進規則庫");
+  const r3reg1 = await (await policyManager.registerRuleSet(
     RULE_WL, "WHITELIST", true, await whitelist.getAddress(), 1,
-  );
-  await policyManager.registerRuleSet(
+  )).wait();
+  txEvidence(r3reg1, `PolicyManager.registerRuleSet(RULE_WHITELIST, "WHITELIST", true, whitelist=${shortAddr(await whitelist.getAddress())}, priority=1)`);
+  const r3reg2 = await (await policyManager.registerRuleSet(
     RULE_FX, "FX_LIMIT", true, await fxLimit.getAddress(), 2,
-  );
+  )).wait();
+  txEvidence(r3reg2, `PolicyManager.registerRuleSet(RULE_FX, "FX_LIMIT", true, fxLimit=${shortAddr(await fxLimit.getAddress())}, priority=2)`);
+
+  console.log("");
+  highlight("監管機關呼叫 PolicyManager.setJurisdictionRules(jurisdiction, ruleIds[])，把兩條規則綁定到 SG 管轄區");
   const r3c = await (
     await policyManager.setJurisdictionRules(JURISDICTION_SG, [RULE_WL, RULE_FX])
   ).wait();
-  txEvidence(r3c, "PolicyManager.setJurisdictionRules()");
+  txEvidence(r3c, "PolicyManager.setJurisdictionRules(SG, [RULE_WHITELIST, RULE_FX])");
   showEvent(r3c, policyManager, "JurisdictionConfigured", (a) =>
     `jurisdiction=${ethers.decodeBytes32String(a[0])}, ruleCount=${a[1]}`,
   );
-  await policyManager.setJurisdictionEnabled(JURISDICTION_SG, true);
+  const r3en = await (await policyManager.setJurisdictionEnabled(JURISDICTION_SG, true)).wait();
+  txEvidence(r3en, "PolicyManager.setJurisdictionEnabled(SG, true)");
 
-  await wrapper.setFXRateProvider(await fxProvider.getAddress());
-  await wrapper.setFXEnabled(true);
-  await wrapper.setAssetCurrency(await twd.getAddress(), TWD);
-  await wrapper.setAssetCurrency(await sgd.getAddress(), SGD);
+  console.log("");
+  highlight("監管機關呼叫 wrapper.setFXRateProvider(provider) / setFXEnabled(enabled) / setAssetCurrency(token, currency) ×2，啟用 FX 系統並設定 TWD/SGD 幣種對應");
+  const r3fx1 = await (await wrapper.setFXRateProvider(await fxProvider.getAddress())).wait();
+  txEvidence(r3fx1, `wrapper.setFXRateProvider(fxProvider=${shortAddr(await fxProvider.getAddress())})`);
+  const r3fx2 = await (await wrapper.setFXEnabled(true)).wait();
+  txEvidence(r3fx2, "wrapper.setFXEnabled(true)");
+  const r3fx3 = await (await wrapper.setAssetCurrency(await twd.getAddress(), TWD)).wait();
+  txEvidence(r3fx3, `wrapper.setAssetCurrency(twd=${shortAddr(await twd.getAddress())}, TWD)`);
+  const r3fx4 = await (await wrapper.setAssetCurrency(await sgd.getAddress(), SGD)).wait();
+  txEvidence(r3fx4, `wrapper.setAssetCurrency(sgd=${shortAddr(await sgd.getAddress())}, SGD)`);
   ok("PolicyWrapper FX 系統已啟用，TWD/SGD 幣種對應已設定");
 
   await waitForKey();
@@ -395,21 +383,30 @@ async function main() {
   // ════════════════════════════════════════════════════════════
   banner(4, "銀行 A 包裝底層資產：TWD → PBM (ERC-1155)");
 
-  await (await twd.mint(bankA.address, ethers.parseEther("10000"))).wait();
-  info(`已鑄造 10,000 TWD 給銀行 A — 餘額：${fmt(await twd.balanceOf(bankA.address))} TWD`);
+  highlight("監管機關呼叫 twd.mint(account, amount)，鑄造 10,000 TWD 給銀行 A 作為包裝來源");
+  const r4mint = await (await twd.mint(bankA.address, ethers.parseEther("10000"))).wait();
+  txEvidence(r4mint, "twd.mint(bankA, 10000e18)");
+  info(`銀行 A 當前 TWD 餘額：${fmt(await twd.balanceOf(bankA.address))} TWD`);
 
-  await wrapper.setComplianceExemption(bankA.address, true);
+  console.log("");
+  highlight("監管機關呼叫 wrapper.setComplianceExemption(account, true)，暫時豁免銀行 A 的合規檢查（讓首次 wrap 不被擋）");
+  const r4ex = await (await wrapper.setComplianceExemption(bankA.address, true)).wait();
+  txEvidence(r4ex, "wrapper.setComplianceExemption(bankA, true)");
 
+  console.log("");
   const wrapAmount = ethers.parseEther("5000");
-  await (await twd.connect(bankA).approve(await wrapper.getAddress(), wrapAmount)).wait();
+  highlight("銀行 A 呼叫 twd.approve(spender, amount)，授權 wrapper 動用 5,000 TWD");
+  const r4ap = await (await twd.connect(bankA).approve(await wrapper.getAddress(), wrapAmount)).wait();
+  txEvidence(r4ap, "twd.approve(wrapper, 5000e18)");
 
-  highlight("執行 wrapper.wrap(ERC20, TWD, 0, 5000e18, proof)");
+  console.log("");
+  highlight("銀行 A 呼叫 wrapper.wrap(assetType=ERC20, token=TWD, tokenId=0, amount=5000e18, proof)，把 TWD 鎖入 wrapper 並鑄出對應的 PBM");
   const wrapReceipt = await (
     await wrapper
       .connect(bankA)
       .wrap(AssetType.ERC20, await twd.getAddress(), 0, wrapAmount, emptyProof)
   ).wait();
-  txEvidence(wrapReceipt, "wrapper.wrap()");
+  txEvidence(wrapReceipt, "wrapper.wrap(ERC20, twd, 0, 5000e18, emptyProof)");
   showEvent(wrapReceipt, wrapper, "TokenWrapped", (a) =>
     `user=${shortAddr(a[0])}, tokenId=${a[1].toString().slice(0, 12)}…, asset=ERC20, amount=${fmt(a[5])} TWD`,
   );
@@ -423,8 +420,10 @@ async function main() {
   info(`銀行 A    PBM 餘額：${fmt(await pbm.balanceOf(bankA.address, pbmTokenId))} PBM`);
   info(`Wrapper   TWD 鎖定：${fmt(await twd.balanceOf(await wrapper.getAddress()))} TWD（這 5000 真的存在合約裡）`);
 
-  await wrapper.setComplianceExemption(bankA.address, false);
-  ok("解除豁免，後續轉帳都要過完整規則鏈");
+  console.log("");
+  highlight("監管機關呼叫 wrapper.setComplianceExemption(account, false)，解除豁免，後續轉帳都要過完整規則鏈");
+  const r4unex = await (await wrapper.setComplianceExemption(bankA.address, false)).wait();
+  txEvidence(r4unex, "wrapper.setComplianceExemption(bankA, false)");
 
   await waitForKey();
 
@@ -435,17 +434,17 @@ async function main() {
 
   highlight("情境：銀行 A → 銀行 B（KYC 過，但未上白名單）");
 
-  // 先 view 預檢，讓觀眾看到規則合約現在就回答 false
-  info("預檢：先用 view function 問 WhitelistRule，它會怎麼回答？");
+  console.log("");
+  highlight("預檢：呼叫 whitelist.checkCompliance.staticCall(from, to, amount)，用 view function 問規則合約對這筆轉帳的判斷（不花 gas、不上鏈）");
   const [wlPassed, wlReason] = await whitelist.checkCompliance.staticCall(
     bankA.address, bankB.address, ethers.parseEther("100"),
   );
   console.log(
     `  ${c.gray}whitelist.checkCompliance(bankA, bankB, 100e18)  →  (passed=${c.red}${wlPassed}${c.gray}, reason="${c.red}${wlReason}${c.gray}")${c.reset}`,
   );
-  console.log("");
 
-  info("實際送 transfer 上鏈，預期會被 PBMToken._update 擋下並 revert...");
+  console.log("");
+  highlight("銀行 A 呼叫 pbm.safeTransferFrom(from, to, tokenId, amount=100e18, data)，實際送 transfer 上鏈，預期被 PBMToken._update 擋下並 revert");
   try {
     await pbm
       .connect(bankA)
@@ -469,6 +468,8 @@ async function main() {
 
   highlight("情境：把銀行 A 改成「非居民」，外匯日上限 1,000 TWD，試圖轉 2,000");
 
+  console.log("");
+  highlight("監管機關呼叫 ccid.setIdentityTag(account, NON_RESIDENT)，把銀行 A 改成非居民身份（FX 規則才會作用）");
   const r6a = await (await ccid.setIdentityTag(bankA.address, TAG_NON_RESIDENT)).wait();
   txEvidence(r6a, "ccid.setIdentityTag(bankA, NON_RESIDENT)");
   showEvent(r6a, ccid, "IdentityTagSet", (a) =>
@@ -476,7 +477,7 @@ async function main() {
   );
 
   console.log("");
-  info("預檢：問 FXLimitRule 它現在的判斷");
+  highlight("預檢：呼叫 fxLimit.checkCompliance.staticCall(from, to, amount) + previewTransfer(account, amount)，先看 FX 規則的判斷與當日累計");
   const [fxPassed, fxReason] = await fxLimit.checkCompliance.staticCall(
     bankA.address, merchant.address, ethers.parseEther("2000"),
   );
@@ -487,9 +488,9 @@ async function main() {
     bankA.address, ethers.parseEther("2000"),
   );
   info(`previewTransfer 預測：當日累計 ${fmt(currentTotal)} → ${fmt(newTotal)}（上限 1,000）`);
-  console.log("");
 
-  info("實際送 transfer 上鏈，預期會被擋...");
+  console.log("");
+  highlight("銀行 A 呼叫 pbm.safeTransferFrom(from, to, tokenId, amount=2000e18, data)，實際送 transfer 上鏈，預期被 FX 規則擋下");
   try {
     await pbm
       .connect(bankA)
@@ -503,8 +504,10 @@ async function main() {
     info(`內層真實原因（從上面的 view 預檢可以看到）：FX_LIMIT_EXCEEDED`);
   }
 
-  await ccid.setIdentityTag(bankA.address, TAG_RESIDENT);
-  info("已把銀行 A 標籤改回 RESIDENT，準備下一步");
+  console.log("");
+  highlight("監管機關呼叫 ccid.setIdentityTag(account, RESIDENT)，把銀行 A 標籤改回居民，恢復下一步可用狀態");
+  const r6b = await (await ccid.setIdentityTag(bankA.address, TAG_RESIDENT)).wait();
+  txEvidence(r6b, "ccid.setIdentityTag(bankA, RESIDENT)");
 
   await waitForKey();
 
@@ -518,6 +521,8 @@ async function main() {
   const aBefore = await pbm.balanceOf(bankA.address, pbmTokenId);
   const mBefore = await pbm.balanceOf(merchant.address, pbmTokenId);
 
+  console.log("");
+  highlight("銀行 A 呼叫 pbm.safeTransferFrom(from, to, tokenId, amount=500e18, data)，觸發 PolicyManager 完整規則鏈並通過");
   const okReceipt = await (
     await pbm
       .connect(bankA)
@@ -526,7 +531,7 @@ async function main() {
         ethers.parseEther("500"), "0x",
       )
   ).wait();
-  txEvidence(okReceipt, "pbm.safeTransferFrom() ← 觸發完整規則鏈");
+  txEvidence(okReceipt, "pbm.safeTransferFrom(bankA, merchant, pbmTokenId, 500e18, 0x) ← 觸發完整規則鏈");
 
   // 解碼鏈上事件
   showEvent(okReceipt, wrapper, "ComplianceCheckInitiated", (a) =>
@@ -555,18 +560,32 @@ async function main() {
 
   highlight("情境：商家標價 100 SGD，遊客錢包扣 TWD，系統自動轉換並上鏈匯率");
 
-  await wrapper.setComplianceExemption(tourist.address, true);
-  await wrapper.setComplianceExemption(merchant.address, true);
-  await twd.mint(tourist.address, ethers.parseEther("100000"));
-  await sgd.mint(await wrapper.getAddress(), ethers.parseEther("10000"));
+  console.log("");
+  highlight("監管機關呼叫 wrapper.setComplianceExemption(account, true) ×2 + twd.mint(account, amount) + sgd.mint(account, amount)，準備跨境支付的測試資金與豁免");
+  const r8e1 = await (await wrapper.setComplianceExemption(tourist.address, true)).wait();
+  txEvidence(r8e1, "wrapper.setComplianceExemption(tourist, true)");
+  const r8e2 = await (await wrapper.setComplianceExemption(merchant.address, true)).wait();
+  txEvidence(r8e2, "wrapper.setComplianceExemption(merchant, true)");
+  const r8mt = await (await twd.mint(tourist.address, ethers.parseEther("100000"))).wait();
+  txEvidence(r8mt, "twd.mint(tourist, 100000e18)");
+  const r8ms = await (await sgd.mint(await wrapper.getAddress(), ethers.parseEther("10000"))).wait();
+  txEvidence(r8ms, "sgd.mint(wrapper, 10000e18)");
+  ok("已給遊客 100,000 TWD、wrapper 預備 10,000 SGD 池子，雙方暫時豁免合規");
 
+  console.log("");
   const merchantPrice = ethers.parseEther("100");
+  highlight("查詢匯率：呼叫 fxProvider.convert(fromCurrency=SGD, toCurrency=TWD, amount)，view function 取得鏈上即時匯率");
   const [expectedTWD, rateUsed] = await fxProvider.convert(SGD, TWD, merchantPrice);
   info(`鏈上查詢匯率：1 SGD = ${fmt(rateUsed, 4)} TWD`);
   info(`商家標價 100 SGD ⇒ 遊客需付 ${fmt(expectedTWD)} TWD`);
 
-  await twd.connect(tourist).approve(await wrapper.getAddress(), expectedTWD);
+  console.log("");
+  highlight("遊客呼叫 twd.approve(spender, amount)，授權 wrapper 動用換匯所需的 TWD");
+  const r8ap = await (await twd.connect(tourist).approve(await wrapper.getAddress(), expectedTWD)).wait();
+  txEvidence(r8ap, `twd.approve(wrapper, ${fmt(expectedTWD)} TWD)`);
 
+  console.log("");
+  highlight("遊客呼叫 wrapper.payWithFXConversion(targetAmount, targetCurrency=SGD, sourceToken=TWD, payee, proof)，鏈上一次完成換匯 + 付款");
   const fxReceipt = await (
     await wrapper
       .connect(tourist)
@@ -574,7 +593,7 @@ async function main() {
         merchantPrice, SGD, await twd.getAddress(), merchant.address, emptyProof,
       )
   ).wait();
-  txEvidence(fxReceipt, "wrapper.payWithFXConversion()");
+  txEvidence(fxReceipt, "wrapper.payWithFXConversion(100 SGD, SGD, twd, merchant, emptyProof)");
   showEvent(fxReceipt, wrapper, "CrossBorderPaymentInitiated", (a) =>
     `payer=${shortAddr(a[1])} → payee=${shortAddr(a[2])}, ${fmt(a[5])} TWD = ${fmt(a[6])} SGD @ rate=${fmt(a[7], 4)}`,
   );
@@ -587,7 +606,8 @@ async function main() {
   info(`  rate:   ${fmt(fxRecord.rateUsed, 4)}`);
   info(`  ts:     ${new Date(Number(fxRecord.timestamp) * 1000).toISOString()}`);
 
-  highlight("商家結算：把 PBM 兌回 SGD");
+  console.log("");
+  highlight("商家呼叫 wrapper.settleCrossBorderPayment(pbmTokenId, amount, targetToken=SGD, payee)，把 PBM 兌回 SGD");
   const settleReceipt = await (
     await wrapper
       .connect(merchant)
@@ -595,11 +615,16 @@ async function main() {
         pbmTokenId, expectedTWD, await sgd.getAddress(), merchant.address,
       )
   ).wait();
-  txEvidence(settleReceipt, "wrapper.settleCrossBorderPayment()");
+  txEvidence(settleReceipt, `wrapper.settleCrossBorderPayment(pbmTokenId, ${fmt(expectedTWD)} TWD, sgd, merchant)`);
   ok(`商家收到 SGD：${fmt(await sgd.balanceOf(merchant.address))} SGD`);
 
-  await wrapper.setComplianceExemption(tourist.address, false);
-  await wrapper.setComplianceExemption(merchant.address, false);
+  console.log("");
+  highlight("監管機關呼叫 wrapper.setComplianceExemption(account, false) ×2，解除遊客與商家的豁免，恢復後續規則檢查");
+  const r8ue1 = await (await wrapper.setComplianceExemption(tourist.address, false)).wait();
+  txEvidence(r8ue1, "wrapper.setComplianceExemption(tourist, false)");
+  const r8ue2 = await (await wrapper.setComplianceExemption(merchant.address, false)).wait();
+  txEvidence(r8ue2, "wrapper.setComplianceExemption(merchant, false)");
+  ok("已解除豁免");
 
   await waitForKey();
 
@@ -613,10 +638,12 @@ async function main() {
   const merchantBal = await pbm.balanceOf(merchant.address, pbmTokenId);
   info(`商家 C 當前 PBM 餘額：${fmt(merchantBal)} PBM`);
 
+  console.log("");
+  highlight("監管機關呼叫 pbm.setFrozenTokens(account, tokenId, amount)，凍結商家 C 持有的全部 PBM（ERC-7943 監管覆寫）");
   const freezeReceipt = await (
     await pbm.setFrozenTokens(merchant.address, pbmTokenId, merchantBal)
   ).wait();
-  txEvidence(freezeReceipt, "pbm.setFrozenTokens()");
+  txEvidence(freezeReceipt, `pbm.setFrozenTokens(merchant, pbmTokenId, ${fmt(merchantBal)} PBM)`);
   showEvent(freezeReceipt, pbm, "Frozen", (a) =>
     `account=${shortAddr(a[0])}, tokenId=…${a[1].toString().slice(-6)}, amount=${fmt(a[2])}`,
   );
@@ -626,7 +653,7 @@ async function main() {
   info(`未凍結餘額：${fmt(await pbm.getUnfrozenBalance(merchant.address, pbmTokenId))} PBM`);
 
   console.log("");
-  info("驗證：商家試圖轉移 1 PBM 給銀行 A...");
+  highlight("商家呼叫 pbm.safeTransferFrom(from, to, tokenId, amount=1e18, data)，試圖轉出 1 PBM 給銀行 A，預期被凍結邏輯阻擋");
   try {
     await pbm
       .connect(merchant)
@@ -648,12 +675,14 @@ async function main() {
 
   highlight("情境：監管機關行使 ERC-7943 forcedTransfer，把資產取回");
 
+  console.log("");
+  highlight("監管機關呼叫 pbm.forcedTransfer(from, to, tokenId, amount)，行使 ERC-7943 強制轉移權，把商家全部 PBM 取回監管錢包");
   const ftReceipt = await (
     await pbm.forcedTransfer(
       merchant.address, deployer.address, pbmTokenId, merchantBal,
     )
   ).wait();
-  txEvidence(ftReceipt, "pbm.forcedTransfer() ← 監管權限");
+  txEvidence(ftReceipt, `pbm.forcedTransfer(merchant, deployer, pbmTokenId, ${fmt(merchantBal)} PBM) ← 監管權限`);
   showEvent(ftReceipt, pbm, "ForcedTransfer", (a) =>
     `from=${shortAddr(a[0])}, to=${shortAddr(a[1])}, tokenId=…${a[2].toString().slice(-6)}, amount=${fmt(a[3])}`,
   );
@@ -662,11 +691,12 @@ async function main() {
   info(`商家     PBM：${fmt(merchantBal)} → ${fmt(await pbm.balanceOf(merchant.address, pbmTokenId))}`);
   info(`監管機關 PBM：${fmt(await pbm.balanceOf(deployer.address, pbmTokenId))}`);
 
-  highlight("把這次監管行動寫入 STR 審計倉儲");
+  console.log("");
   const strId = ethers.keccak256(ethers.toUtf8Bytes("STR_REGULATOR_FORCED_001"));
   const offchainHash = ethers.keccak256(
     ethers.toUtf8Bytes("Regulator forced recovery — case #001"),
   );
+  highlight("監管機關呼叫 str.registerSTR(strId, offchainHash, ipfsURI, onchainTxHash, status)，把這次監管行動寫入 STR 審計倉儲，鏈下證據與鏈上 tx 永久綁定");
   const strReceipt = await (
     await str.registerSTR(
       strId, offchainHash,
@@ -675,7 +705,7 @@ async function main() {
       3, // RELEASED
     )
   ).wait();
-  txEvidence(strReceipt, "str.registerSTR()");
+  txEvidence(strReceipt, `str.registerSTR(strId=${strId.slice(0, 14)}…, offchainHash=${offchainHash.slice(0, 14)}…, "ipfs://Qm…", onchainTx=${ftReceipt.hash.slice(0, 14)}…, status=RELEASED)`);
   showEvent(strReceipt, str, "STRRegistered", (a) =>
     `strId=${a[0].slice(0, 14)}…, registrar=${shortAddr(a[3])}`,
   );
