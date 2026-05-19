@@ -51,13 +51,9 @@ function highlight(msg) {
   console.log(`  ${c.yellow}${c.bold}${msg}${c.reset}`);
 }
 
-// 印出鏈上交易的證據（tx hash + block）— 讓觀眾看到這是真的鏈上動作
-function txEvidence(receipt, label) {
-  const hash = receipt.hash.slice(0, 18);
-  const block = receipt.blockNumber;
-  console.log(
-    `  ${c.blue}┃${c.reset} ${c.bold}${label}${c.reset}  ${c.gray}tx=${hash}…  block=${block}${c.reset}`,
-  );
+// 只顯示呼叫的函式與參數，不再印 tx hash / block
+function txEvidence(_receipt, label) {
+  console.log(`  ${c.blue}┃${c.reset} ${c.bold}${label}${c.reset}`);
 }
 
 // 從 receipt 取出指定事件並用 contract interface 解碼
@@ -86,12 +82,8 @@ async function deployAndShow(label, factoryName, args = []) {
     ? await Factory.deploy(...args)
     : await Factory.deploy();
   await contract.waitForDeployment();
-  const receipt = await contract.deploymentTransaction().wait();
   const addr = await contract.getAddress();
   console.log(`  ${c.green}✓${c.reset} ${label.padEnd(30)} ${c.bold}addr${c.reset}=${addr}`);
-  console.log(
-    `  ${c.blue}┃${c.reset} ${c.gray}deployTx=${receipt.hash.slice(0, 18)}…  block=${receipt.blockNumber}${c.reset}`,
-  );
   return contract;
 }
 
@@ -388,10 +380,7 @@ async function main() {
   txEvidence(r4mint, "twd.mint(bankA, 10000e18)");
   info(`銀行 A 當前 TWD 餘額：${fmt(await twd.balanceOf(bankA.address))} TWD`);
 
-  console.log("");
-  highlight("監管機關呼叫 wrapper.setComplianceExemption(account, true)，暫時豁免銀行 A 的合規檢查（讓首次 wrap 不被擋）");
-  const r4ex = await (await wrapper.setComplianceExemption(bankA.address, true)).wait();
-  txEvidence(r4ex, "wrapper.setComplianceExemption(bankA, true)");
+  await (await wrapper.setComplianceExemption(bankA.address, true)).wait();
 
   console.log("");
   const wrapAmount = ethers.parseEther("5000");
@@ -420,31 +409,22 @@ async function main() {
   info(`銀行 A    PBM 餘額：${fmt(await pbm.balanceOf(bankA.address, pbmTokenId))} PBM`);
   info(`Wrapper   TWD 鎖定：${fmt(await twd.balanceOf(await wrapper.getAddress()))} TWD（這 5000 真的存在合約裡）`);
 
-  console.log("");
-  highlight("監管機關呼叫 wrapper.setComplianceExemption(account, false)，解除豁免，後續轉帳都要過完整規則鏈");
-  const r4unex = await (await wrapper.setComplianceExemption(bankA.address, false)).wait();
-  txEvidence(r4unex, "wrapper.setComplianceExemption(bankA, false)");
+  await (await wrapper.setComplianceExemption(bankA.address, false)).wait();
 
   await waitForKey();
 
   // ════════════════════════════════════════════════════════════
-  // STEP 5：失敗案例 1 — Whitelist 規則阻擋
+  // STEP 5：違規交易即時阻擋（白名單 + FX 日上限）
   // ════════════════════════════════════════════════════════════
-  banner(5, "失敗案例 1：白名單規則即時阻擋");
+  banner(5, "違規交易即時阻擋");
 
-  highlight("情境：銀行 A → 銀行 B（KYC 過，但未上白名單）");
+  // ── 案例 1：白名單規則阻擋 ─────────────────────────────────
+  console.log(`\n  ${c.magenta}${c.bold}── 案例 1：白名單規則阻擋 ──${c.reset}\n`);
 
-  console.log("");
-  highlight("預檢：呼叫 whitelist.checkCompliance.staticCall(from, to, amount)，用 view function 問規則合約對這筆轉帳的判斷（不花 gas、不上鏈）");
-  const [wlPassed, wlReason] = await whitelist.checkCompliance.staticCall(
-    bankA.address, bankB.address, ethers.parseEther("100"),
-  );
-  console.log(
-    `  ${c.gray}whitelist.checkCompliance(bankA, bankB, 100e18)  →  (passed=${c.red}${wlPassed}${c.gray}, reason="${c.red}${wlReason}${c.gray}")${c.reset}`,
-  );
+  highlight("情境：銀行 A 想轉 100 PBM 給銀行 B。銀行 B 雖然 KYC 通過，但監管機關沒把它加入白名單，因此這筆 PBM 轉帳應該在鏈上被即時擋下。");
 
   console.log("");
-  highlight("銀行 A 呼叫 pbm.safeTransferFrom(from, to, tokenId, amount=100e18, data)，實際送 transfer 上鏈，預期被 PBMToken._update 擋下並 revert");
+  highlight("銀行 A 呼叫 pbm.safeTransferFrom(from, to, tokenId, amount=100e18, data)");
   try {
     await pbm
       .connect(bankA)
@@ -455,16 +435,10 @@ async function main() {
     console.log(`  ${c.red}✗ DEMO 失敗：交易理應被擋下${c.reset}`);
   } catch (err) {
     fail("transaction reverted（ERC7943CannotTransfer）");
-    info(`外層錯誤：${err.shortMessage || err.reason || "ERC7943CannotTransfer"}`);
-    info("內層真實原因（從上面的 view 預檢可以看到）：Recipient not in whitelist");
   }
 
-  await waitForKey();
-
-  // ════════════════════════════════════════════════════════════
-  // STEP 6：失敗案例 2 — FX 額度上限阻擋
-  // ════════════════════════════════════════════════════════════
-  banner(6, "失敗案例 2：外匯日上限規則即時阻擋");
+  // ── 案例 2：外匯日上限規則阻擋 ─────────────────────────────
+  console.log(`\n  ${c.magenta}${c.bold}── 案例 2：外匯日上限規則阻擋 ──${c.reset}\n`);
 
   highlight("情境：把銀行 A 改成「非居民」，外匯日上限 1,000 TWD，試圖轉 2,000");
 
@@ -477,20 +451,7 @@ async function main() {
   );
 
   console.log("");
-  highlight("預檢：呼叫 fxLimit.checkCompliance.staticCall(from, to, amount) + previewTransfer(account, amount)，先看 FX 規則的判斷與當日累計");
-  const [fxPassed, fxReason] = await fxLimit.checkCompliance.staticCall(
-    bankA.address, merchant.address, ethers.parseEther("2000"),
-  );
-  console.log(
-    `  ${c.gray}fxLimit.checkCompliance(bankA, merchant, 2000e18)  →  (passed=${c.red}${fxPassed}${c.gray}, reason="${c.red}${fxReason}${c.gray}")${c.reset}`,
-  );
-  const [, currentTotal, newTotal, remaining] = await fxLimit.previewTransfer(
-    bankA.address, ethers.parseEther("2000"),
-  );
-  info(`previewTransfer 預測：當日累計 ${fmt(currentTotal)} → ${fmt(newTotal)}（上限 1,000）`);
-
-  console.log("");
-  highlight("銀行 A 呼叫 pbm.safeTransferFrom(from, to, tokenId, amount=2000e18, data)，實際送 transfer 上鏈，預期被 FX 規則擋下");
+  highlight("銀行 A 呼叫 pbm.safeTransferFrom(from, to, tokenId, amount=2000e18, data)");
   try {
     await pbm
       .connect(bankA)
@@ -501,20 +462,17 @@ async function main() {
     console.log(`  ${c.red}✗ DEMO 失敗：交易理應被擋下${c.reset}`);
   } catch (err) {
     fail("transaction reverted（ERC7943CannotTransfer）");
-    info(`內層真實原因（從上面的 view 預檢可以看到）：FX_LIMIT_EXCEEDED`);
   }
 
   console.log("");
-  highlight("監管機關呼叫 ccid.setIdentityTag(account, RESIDENT)，把銀行 A 標籤改回居民，恢復下一步可用狀態");
   const r6b = await (await ccid.setIdentityTag(bankA.address, TAG_RESIDENT)).wait();
-  txEvidence(r6b, "ccid.setIdentityTag(bankA, RESIDENT)");
 
   await waitForKey();
 
   // ════════════════════════════════════════════════════════════
-  // STEP 7：成功案例
+  // STEP 6：成功案例
   // ════════════════════════════════════════════════════════════
-  banner(7, "成功案例：通過完整規則鏈");
+  banner(6, "成功案例：通過完整規則鏈");
 
   highlight("情境：銀行 A → 商家 C（白名單內、KYC 過、額度足夠），轉 500 PBM");
 
@@ -554,9 +512,9 @@ async function main() {
   await waitForKey();
 
   // ════════════════════════════════════════════════════════════
-  // STEP 8：跨境支付 + FX 匯率
+  // STEP 7：跨境支付 + FX 匯率
   // ════════════════════════════════════════════════════════════
-  banner(8, "跨境支付：遊客用 TWD 付 100 SGD");
+  banner(7, "跨境支付：遊客用 TWD 付 100 SGD");
 
   highlight("情境：商家標價 100 SGD，遊客錢包扣 TWD，系統自動轉換並上鏈匯率");
 
@@ -629,9 +587,9 @@ async function main() {
   await waitForKey();
 
   // ════════════════════════════════════════════════════════════
-  // STEP 9：監管覆寫 — 凍結（ERC-7943）
+  // STEP 8：監管覆寫 — 凍結（ERC-7943）
   // ════════════════════════════════════════════════════════════
-  banner(9, "監管覆寫：凍結商家資產（ERC-7943）");
+  banner(8, "監管覆寫：凍結商家資產（ERC-7943）");
 
   highlight("情境：監管機關懷疑商家 C 涉及可疑交易，凍結其全部 PBM");
 
@@ -669,9 +627,9 @@ async function main() {
   await waitForKey();
 
   // ════════════════════════════════════════════════════════════
-  // STEP 10：監管覆寫 — 強制轉移 + STR 審計
+  // STEP 9：監管覆寫 — 強制轉移 + STR 審計
   // ════════════════════════════════════════════════════════════
-  banner(10, "監管覆寫：強制資產回收 + STR 審計軌跡");
+  banner(9, "監管覆寫：強制資產回收 + STR 審計軌跡");
 
   highlight("情境：監管機關行使 ERC-7943 forcedTransfer，把資產取回");
 
@@ -710,7 +668,7 @@ async function main() {
     `strId=${a[0].slice(0, 14)}…, registrar=${shortAddr(a[3])}`,
   );
   showEvent(strReceipt, str, "STROnchainLinked", (a) =>
-    `strId=${a[0].slice(0, 14)}…, onchainTx=${a[1].slice(0, 14)}…  ← 指向 STEP 10 的 forcedTransfer 交易`,
+    `strId=${a[0].slice(0, 14)}…, onchainTx=${a[1].slice(0, 14)}…  ← 指向 STEP 9 的 forcedTransfer 交易`,
   );
 
   await waitForKey();
