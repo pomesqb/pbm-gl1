@@ -47,7 +47,7 @@ contract MockFXRateProvider is IFXRateProvider {
         // SGD 對其他貨幣
         rates[SGD][USD] = 0.741e18;    // 1 SGD = 0.741 USD (1/1.35)
         rates[SGD][CNY] = 5.37e18;     // 1 SGD = 5.37 CNY (7.25/1.35)
-        rates[SGD][TWD] = 23.70e18;    // 1 SGD = 23.70 TWD (32/1.35)
+        rates[SGD][TWD] = 24.69e18;    // 1 SGD = 24.69 TWD (2026/5 市場匯率)
         rates[SGD][SGD] = 1e18;
         
         // CNY 對其他貨幣
@@ -58,7 +58,7 @@ contract MockFXRateProvider is IFXRateProvider {
         
         // TWD 對其他貨幣
         rates[TWD][USD] = 0.03125e18;  // 1 TWD = 0.03125 USD (1/32)
-        rates[TWD][SGD] = 0.0422e18;   // 1 TWD = 0.0422 SGD (1.35/32)
+        rates[TWD][SGD] = 0.0405e18;   // 1 TWD = 0.0405 SGD (1/24.69)
         rates[TWD][CNY] = 0.227e18;    // 1 TWD = 0.227 CNY (7.25/32)
         rates[TWD][TWD] = 1e18;
     }

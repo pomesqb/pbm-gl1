@@ -516,34 +516,23 @@ async function main() {
   // ════════════════════════════════════════════════════════════
   banner(7, "跨境支付：遊客用 TWD 付 100 SGD");
 
-  highlight("情境：商家標價 100 SGD，遊客錢包扣 TWD，系統自動轉換並上鏈匯率");
+  highlight("情境：商家商品標價 100 SGD");
 
-  console.log("");
-  highlight("監管機關呼叫 wrapper.setComplianceExemption(account, true) ×2 + twd.mint(account, amount) + sgd.mint(account, amount)，準備跨境支付的測試資金與豁免");
-  const r8e1 = await (await wrapper.setComplianceExemption(tourist.address, true)).wait();
-  txEvidence(r8e1, "wrapper.setComplianceExemption(tourist, true)");
-  const r8e2 = await (await wrapper.setComplianceExemption(merchant.address, true)).wait();
-  txEvidence(r8e2, "wrapper.setComplianceExemption(merchant, true)");
-  const r8mt = await (await twd.mint(tourist.address, ethers.parseEther("100000"))).wait();
-  txEvidence(r8mt, "twd.mint(tourist, 100000e18)");
-  const r8ms = await (await sgd.mint(await wrapper.getAddress(), ethers.parseEther("10000"))).wait();
-  txEvidence(r8ms, "sgd.mint(wrapper, 10000e18)");
-  ok("已給遊客 100,000 TWD、wrapper 預備 10,000 SGD 池子，雙方暫時豁免合規");
+  await (await wrapper.setComplianceExemption(tourist.address, true)).wait();
+  await (await wrapper.setComplianceExemption(merchant.address, true)).wait();
 
-  console.log("");
+  await (await sgd.mint(await wrapper.getAddress(), ethers.parseEther("10000"))).wait();
+  await (await twd.mint(tourist.address, ethers.parseEther("100000"))).wait();
+
   const merchantPrice = ethers.parseEther("100");
-  highlight("查詢匯率：呼叫 fxProvider.convert(fromCurrency=SGD, toCurrency=TWD, amount)，view function 取得鏈上即時匯率");
-  const [expectedTWD, rateUsed] = await fxProvider.convert(SGD, TWD, merchantPrice);
-  info(`鏈上查詢匯率：1 SGD = ${fmt(rateUsed, 4)} TWD`);
-  info(`商家標價 100 SGD ⇒ 遊客需付 ${fmt(expectedTWD)} TWD`);
+  const [expectedTWD] = await fxProvider.convert(SGD, TWD, merchantPrice);
+  await (await twd.connect(tourist).approve(await wrapper.getAddress(), expectedTWD)).wait();
+
+  const pbmTokenIdForFX = await wrapper.computePBMTokenId(AssetType.ERC20, await twd.getAddress(), 0);
+  const merchantPBMBefore = await pbm.balanceOf(merchant.address, pbmTokenIdForFX);
 
   console.log("");
-  highlight("遊客呼叫 twd.approve(spender, amount)，授權 wrapper 動用換匯所需的 TWD");
-  const r8ap = await (await twd.connect(tourist).approve(await wrapper.getAddress(), expectedTWD)).wait();
-  txEvidence(r8ap, `twd.approve(wrapper, ${fmt(expectedTWD)} TWD)`);
-
-  console.log("");
-  highlight("遊客呼叫 wrapper.payWithFXConversion(targetAmount, targetCurrency=SGD, sourceToken=TWD, payee, proof)，鏈上一次完成換匯 + 付款");
+  highlight("遊客呼叫 wrapper.payWithFXConversion(targetAmount, targetCurrency=SGD, sourceToken=TWD, payee, proof)，鏈上一次完成：(1) 內部呼叫 fxProvider.convert 取得即時匯率 (2) safeTransferFrom 從遊客錢包扣 TWD 進 wrapper (3) 鑄造等額 PBM 給商家");
   const fxReceipt = await (
     await wrapper
       .connect(tourist)
@@ -552,11 +541,18 @@ async function main() {
       )
   ).wait();
   txEvidence(fxReceipt, "wrapper.payWithFXConversion(100 SGD, SGD, twd, merchant, emptyProof)");
-  showEvent(fxReceipt, wrapper, "CrossBorderPaymentInitiated", (a) =>
-    `payer=${shortAddr(a[1])} → payee=${shortAddr(a[2])}, ${fmt(a[5])} TWD = ${fmt(a[6])} SGD @ rate=${fmt(a[7], 4)}`,
-  );
 
   const fxRecord = await wrapper.getFXTransaction(pbmTokenId);
+  const merchantPBMAfter = await pbm.balanceOf(merchant.address, pbmTokenId);
+  const merchantPBMDelta = merchantPBMAfter - merchantPBMBefore;
+  const touristTWDAfter = await twd.balanceOf(tourist.address);
+  console.log("");
+  info(`成交匯率：1 SGD = ${fmt(fxRecord.rateUsed, 4)} TWD（payWithFXConversion 內部抓的）`);
+  info(`遊客錢包：扣 ${fmt(fxRecord.sourceAmount)} TWD → 剩 ${fmt(touristTWDAfter)} TWD`);
+  info(`Wrapper 合約：收下 ${fmt(fxRecord.sourceAmount)} TWD 鎖倉作為 PBM 的底層資產`);
+  const pbmAssetInfo = await wrapper.assets(pbmTokenId);
+  const pbmUnderlying = pbmAssetInfo.assetAddress.toLowerCase() === (await twd.getAddress()).toLowerCase() ? "TWD" : "SGD";
+  info(`商家錢包：收到 ${fmt(merchantPBMDelta)} PBM（tokenId=${pbmTokenId.toString().slice(0, 14)}…，底層鎖 ${fmt(fxRecord.sourceAmount)} ${pbmUnderlying}，下一步換成 SGD）`);
   console.log("");
   info(`鏈上 FX 記錄（永久不可竄改）：`);
   info(`  source: ${fmt(fxRecord.sourceAmount)} TWD`);
@@ -576,13 +572,8 @@ async function main() {
   txEvidence(settleReceipt, `wrapper.settleCrossBorderPayment(pbmTokenId, ${fmt(expectedTWD)} TWD, sgd, merchant)`);
   ok(`商家收到 SGD：${fmt(await sgd.balanceOf(merchant.address))} SGD`);
 
-  console.log("");
-  highlight("監管機關呼叫 wrapper.setComplianceExemption(account, false) ×2，解除遊客與商家的豁免，恢復後續規則檢查");
-  const r8ue1 = await (await wrapper.setComplianceExemption(tourist.address, false)).wait();
-  txEvidence(r8ue1, "wrapper.setComplianceExemption(tourist, false)");
-  const r8ue2 = await (await wrapper.setComplianceExemption(merchant.address, false)).wait();
-  txEvidence(r8ue2, "wrapper.setComplianceExemption(merchant, false)");
-  ok("已解除豁免");
+  await (await wrapper.setComplianceExemption(tourist.address, false)).wait();
+  await (await wrapper.setComplianceExemption(merchant.address, false)).wait();
 
   await waitForKey();
 
