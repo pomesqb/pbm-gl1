@@ -58,7 +58,8 @@ contract MockFXRateProvider is IFXRateProvider {
         
         // TWD 對其他貨幣
         rates[TWD][USD] = 0.03125e18;  // 1 TWD = 0.03125 USD (1/32)
-        rates[TWD][SGD] = 0.0405e18;   // 1 TWD = 0.0405 SGD (1/24.69)
+        // TWD→SGD 用精確倒數（ceil），確保 SGD→TWD→SGD round-trip 不會因截斷損失精度
+        rates[TWD][SGD] = (PRECISION * PRECISION + rates[SGD][TWD] - 1) / rates[SGD][TWD];
         rates[TWD][CNY] = 0.227e18;    // 1 TWD = 0.227 CNY (7.25/32)
         rates[TWD][TWD] = 1e18;
     }

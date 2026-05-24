@@ -569,7 +569,7 @@ async function main() {
         pbmTokenId, expectedTWD, await sgd.getAddress(), merchant.address,
       )
   ).wait();
-  txEvidence(settleReceipt, `wrapper.settleCrossBorderPayment(pbmTokenId, ${fmt(expectedTWD)} TWD, sgd, merchant)`);
+  txEvidence(settleReceipt, `wrapper.settleCrossBorderPayment(pbmTokenId, ${fmt(expectedTWD)} PBM, sgd, merchant)`);
   ok(`商家收到 SGD：${fmt(await sgd.balanceOf(merchant.address))} SGD`);
 
   await (await wrapper.setComplianceExemption(tourist.address, false)).wait();
