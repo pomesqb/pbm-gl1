@@ -221,9 +221,6 @@ async function main() {
     "Mock XSGD",
     "MXSGD",
   ]);
-  const str = await deployAndShow("STRRepository", "STRRepository", [
-    deployer.address,
-  ]);
 
   await waitForKey();
 
@@ -580,7 +577,7 @@ async function main() {
   // ════════════════════════════════════════════════════════════
   // STEP 8：監管覆寫 — 凍結（ERC-7943）
   // ════════════════════════════════════════════════════════════
-  banner(8, "監管覆寫：凍結商家資產（ERC-7943）");
+  banner(8, "監管凍結商家資產（ERC-7943）");
 
   highlight("情境：監管機關懷疑商家 C 涉及可疑交易，凍結其全部 PBM");
 
@@ -618,9 +615,9 @@ async function main() {
   await waitForKey();
 
   // ════════════════════════════════════════════════════════════
-  // STEP 9：監管覆寫 — 強制轉移 + STR 審計
+  // STEP 9：監管覆寫 — 強制轉移
   // ════════════════════════════════════════════════════════════
-  banner(9, "監管覆寫：強制資產回收 + STR 審計軌跡");
+  banner(9, "監管強制資產回收（ERC-7943 forcedTransfer）");
 
   highlight("情境：監管機關行使 ERC-7943 forcedTransfer，把資產取回");
 
@@ -640,28 +637,6 @@ async function main() {
   info(`商家     PBM：${fmt(merchantBal)} → ${fmt(await pbm.balanceOf(merchant.address, pbmTokenId))}`);
   info(`監管機關 PBM：${fmt(await pbm.balanceOf(deployer.address, pbmTokenId))}`);
 
-  console.log("");
-  const strId = ethers.keccak256(ethers.toUtf8Bytes("STR_REGULATOR_FORCED_001"));
-  const offchainHash = ethers.keccak256(
-    ethers.toUtf8Bytes("Regulator forced recovery — case #001"),
-  );
-  highlight("監管機關呼叫 str.registerSTR(strId, offchainHash, ipfsURI, onchainTxHash, status)，把這次監管行動寫入 STR 審計倉儲，鏈下證據與鏈上 tx 永久綁定");
-  const strReceipt = await (
-    await str.registerSTR(
-      strId, offchainHash,
-      "ipfs://Qm.../regulator-action-001.json",
-      ftReceipt.hash,
-      3, // RELEASED
-    )
-  ).wait();
-  txEvidence(strReceipt, `str.registerSTR(strId=${strId.slice(0, 14)}…, offchainHash=${offchainHash.slice(0, 14)}…, "ipfs://Qm…", onchainTx=${ftReceipt.hash.slice(0, 14)}…, status=RELEASED)`);
-  showEvent(strReceipt, str, "STRRegistered", (a) =>
-    `strId=${a[0].slice(0, 14)}…, registrar=${shortAddr(a[3])}`,
-  );
-  showEvent(strReceipt, str, "STROnchainLinked", (a) =>
-    `strId=${a[0].slice(0, 14)}…, onchainTx=${a[1].slice(0, 14)}…  ← 指向 STEP 9 的 forcedTransfer 交易`,
-  );
-
   await waitForKey();
 
   // ════════════════════════════════════════════════════════════
@@ -672,14 +647,6 @@ async function main() {
   console.log("║                        ✓ DEMO 完成                                  ║");
   console.log("╚══════════════════════════════════════════════════════════════════════╝");
   console.log(c.reset);
-
-  console.log(`${c.bold}本次 DEMO 驗證的論文核心論點：${c.reset}`);
-  console.log("  1. 嵌入式監管：合規規則在「轉帳當下」即時執行，不靠事後查核");
-  console.log("  2. 模組化規則：Whitelist / FXLimit 可分別插拔，並支援多管轄區");
-  console.log("  3. 鏈下身份 + 鏈上驗證：CCID 將 PII 留在鏈下，避免 GDPR 衝突");
-  console.log("  4. 跨境匯率上鏈：每筆 FX 交易匯率與金額永久可追溯");
-  console.log("  5. 監管覆寫權：ERC-7943 freeze / forcedTransfer 提供主權救濟管道");
-  console.log("  6. 審計軌跡：STR 倉儲將鏈下證據與鏈上雜湊綁定\n");
 }
 
 main()
