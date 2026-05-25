@@ -294,50 +294,49 @@ contract PBMToken is ERC1155, AccessControl, IERC7943MultiToken {
         uint256[] memory ids,
         uint256[] memory values
     ) internal override {
-        // 跳過 mint (from == 0) 和 burn (to == 0) 的合規檢查
-        // 這些操作由 wrapper 控制
-        if (from != address(0) && to != address(0)) {
-            // 檢查凍結代幣
+        // 凍結餘額檢查：只要 from != 0 就跑，含 burn（避免被 wrapper.unwrap → burn 繞過）
+        // forcedTransfer 已先扣減 _frozenTokens，所以這裡會自然通過
+        if (from != address(0)) {
             for (uint256 i = 0; i < ids.length; i++) {
                 uint256 frozen = _frozenTokens[from][ids[i]];
                 uint256 balance = balanceOf(from, ids[i]);
                 uint256 unfrozen = balance > frozen ? balance - frozen : 0;
-                
-                // 使用 ERC-7943 自定義錯誤
+
                 if (values[i] > unfrozen) {
                     revert ERC7943InsufficientUnfrozenBalance(
-                        from, 
-                        ids[i], 
-                        values[i], 
+                        from,
+                        ids[i],
+                        values[i],
                         unfrozen
                     );
                 }
             }
-            
-            // 鏈上規則鏈檢查；若 wrapper 已透過 ProofSet 驗章，則跳過此區
-            if (!_bypassCompliance) {
-                // 調用 wrapper 進行合規檢查
-                // 注意：這裡不能直接 import PolicyWrapper 避免循環依賴
-                // 使用低階調用
-                for (uint256 i = 0; i < ids.length; i++) {
-                    (bool success, bytes memory result) = wrapper.call(
-                        abi.encodeWithSignature(
-                            "checkTransferCompliance(address,address,uint256,uint256)",
-                            from, to, ids[i], values[i]
-                        )
-                    );
+        }
 
-                    if (success && result.length >= 32) {
-                        (bool isCompliant,) = abi.decode(result, (bool, string));
-                        if (!isCompliant) {
-                            revert ERC7943CannotTransfer(from, to, ids[i], values[i]);
-                        }
+        // 鏈上規則鏈檢查：只在真的 transfer 時跑（跳過 mint / burn）
+        // 若 wrapper 已透過 ProofSet 驗章，也跳過此區
+        if (from != address(0) && to != address(0) && !_bypassCompliance) {
+            // 調用 wrapper 進行合規檢查
+            // 注意：這裡不能直接 import PolicyWrapper 避免循環依賴
+            // 使用低階調用
+            for (uint256 i = 0; i < ids.length; i++) {
+                (bool success, bytes memory result) = wrapper.call(
+                    abi.encodeWithSignature(
+                        "checkTransferCompliance(address,address,uint256,uint256)",
+                        from, to, ids[i], values[i]
+                    )
+                );
+
+                if (success && result.length >= 32) {
+                    (bool isCompliant,) = abi.decode(result, (bool, string));
+                    if (!isCompliant) {
+                        revert ERC7943CannotTransfer(from, to, ids[i], values[i]);
                     }
-                    // 如果 wrapper 調用失敗，允許轉移（可配置為嚴格模式）
                 }
+                // 如果 wrapper 調用失敗，允許轉移（可配置為嚴格模式）
             }
         }
-        
+
         super._update(from, to, ids, values);
     }
     
